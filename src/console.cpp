@@ -3,6 +3,7 @@
 #include "console.h"
 #include <conio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static HANDLE outputHandle = INVALID_HANDLE_VALUE;
 static CONSOLE_SCREEN_BUFFER_INFO savedInfo;
@@ -95,4 +96,11 @@ void __cdecl Con_WaitForExit()
     while (_getch() != 27) {
         // No aim, shooting, pause, or menu handling in this preview.
     }
+}
+
+// Random-number service: see docs/OUT_OF_OUTLINE.md, Pseudorandom colors.
+int __cdecl Con_Rand(int n)
+{
+    if (n <= 0) return 0;
+    return rand() % n;
 }
