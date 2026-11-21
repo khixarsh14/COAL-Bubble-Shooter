@@ -1,5 +1,15 @@
 # Code walkthrough through the Match milestone
 
+## Playable integration
+
+- **Shooter.** `Shooter_Aim(step)` clamps the angle index. `Shooter_Fire()` captures indexed velocities and initializes position and the last-empty sentinel. `Shooter_Update()` holds the step count in EBX and the candidate column and row in ESI/EDI across cdecl calls. It reflects X, visits crossed cells, places once, resolves once, and promotes the color queue. If the whole path to the first obstacle was blocked, `lastRow = -1` signals a failed placement.
+- **Game.** `Game_Reset()` initializes a round and preserves the session record. `Game_Update()` derives key edges, dispatches states, and processes each landing once. During a shot step EDI holds the prior score. A change indicates a pop even after the floating search reuses `popCount`.
+- **Score.** `Score_UpdateDrop(popped)` owns the miss countdown and calls both grid drop operations if the count expires. `Score_UpdateLevel()` advances an empty board, refills it, and resets the interval. `Score_AddPop(count)` and `Score_AddDrop(count)` are standalone helpers. The active game gets both awards from `Match_Resolve` and its floating pass. `Num_ToString(value, bufferAddress)` uses unsigned magnitude division with EDX:EAX, stacks the digits, then writes them back in reverse order.
+- **Console.** `Con_ReadKeys()` consumes Win32 events, tracks held keys, and emits a fresh-event pulse for game over. `Con_Render()` switches screens and invalidates its render cache when a round starts. It composes the flying shot over the grid and redraws cells when their visible color changes. Its launcher-lane pass restores the aim marker after a shot moves into the board. HUD values use fixed-width decimal fields.
+- **Main.** `main()` initializes the console, draws the menu, then polls, updates, renders, and sleeps until `STATE_EXIT`. It restores console settings on normal exit.
+
+The sections below describe the foundation and preserved grid/match engine at earlier milestones.
+
 Ownership labels name the planned human maintainer; generation is disclosed in
 AI_DISCLOSURE.md. All functions use cdecl. Asm_Add, the seven grid functions, and
 the three Match functions contain inline assembly. Registers for C++ services are chosen by MSVC, with no handwritten

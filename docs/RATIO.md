@@ -13,24 +13,20 @@ This scanner supports ordinary C++ quoted literals, not raw or multiline string 
 | File | Assembly lines | C++ lines | Assembly % | C++ % |
 | --- | ---: | ---: | ---: | ---: |
 | src/asm_test.cpp | 3 | 17 | 15.00 | 85.00 |
-| src/console.cpp | 0 | 91 | 0.00 | 100.00 |
-| src/console.h | 0 | 18 | 0.00 | 100.00 |
+| src/console.cpp | 388 | 194 | 66.67 | 33.33 |
+| src/console.h | 0 | 17 | 0.00 | 100.00 |
 | src/data.cpp | 0 | 15 | 0.00 | 100.00 |
-| src/game.cpp | 0 | 0 | 0.00 | 0.00 |
-| src/game.h | 0 | 47 | 0.00 | 100.00 |
+| src/game.cpp | 135 | 13 | 91.22 | 8.78 |
+| src/game.h | 0 | 48 | 0.00 | 100.00 |
 | src/grid.cpp | 117 | 44 | 72.67 | 27.33 |
-| src/main.cpp | 0 | 13 | 0.00 | 100.00 |
+| src/main.cpp | 0 | 19 | 0.00 | 100.00 |
 | src/match.cpp | 148 | 19 | 88.62 | 11.38 |
-| src/score.cpp | 0 | 0 | 0.00 | 0.00 |
-| src/shooter.cpp | 0 | 0 | 0.00 | 0.00 |
+| src/score.cpp | 64 | 26 | 71.11 | 28.89 |
+| src/shooter.cpp | 167 | 18 | 90.27 | 9.73 |
+| tests/game_tests.cpp | 0 | 161 | 0.00 | 100.00 |
 | tests/grid_tests.cpp | 0 | 135 | 0.00 | 100.00 |
 | tests/match_tests.cpp | 2 | 205 | 0.97 | 99.03 |
-| tests/preview_smoke.cpp | 0 | 76 | 0.00 | 100.00 |
-| PRODUCTION (src only) | 268 | 264 | 50.38 | 49.62 |
-| TESTS ONLY | 2 | 416 | 0.48 | 99.52 |
-| COMBINED (src + tests) | 270 | 680 | 28.42 | 71.58 |
-
-Match milestone: real recursive flood-fill, popping, and floating removal are implemented; preview behavior is unchanged.
-The combined percentage includes the two ESP-reading MOV lines in tests/match_tests.cpp as test assembly.
-The final minimum is 70% assembly, targeting 72-75%; further gameplay assembly is deferred.
-No pointless instructions were added to increase the percentage.
+| tests/preview_smoke.cpp | 0 | 97 | 0.00 | 100.00 |
+| PRODUCTION (src only) | 1022 | 430 | 70.39 | 29.61 |
+| TESTS ONLY | 2 | 598 | 0.33 | 99.67 |
+| COMBINED (src + tests) | 1024 | 1028 | 49.90 | 50.10 |

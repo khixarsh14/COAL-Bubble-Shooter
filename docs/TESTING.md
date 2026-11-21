@@ -1,5 +1,16 @@
 # Testing record
 
+## Playable integration verification
+
+The current test commands are in the README. Verified on VS 2026 MSVC x86 using the batch scripts:
+
+- Assembly proof and game build passed.
+- GameTests passed 29 checks covering motion, corner crossings, landing, scores, drops, levels, game states, and decimal conversion.
+- MatchTests passed 25 checks and GridTests passed 31 checks.
+- The live console smoke test passed six checks covering menu, help, drawing, shot erasure, pause/resume, and clean exit.
+
+The material below records earlier milestones. The current source ratio is generated in RATIO.md.
+
 Owner: Abdullah bin Faheem; Grid and Match checks contributed for Khizar's modules.
 21 November 2026. Khizar confirmed the Milestone 1 preview runs in VS 2026 and
 both existing projects use v145. The requested Match milestone is now complete.
