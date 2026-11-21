@@ -8,11 +8,15 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "AsmProof", "AsmProof.vcxpro
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "GridTests", "GridTests.vcxproj", "{DD6E7317-3A73-45BC-91B6-A63BCA3EFB4B}"
 EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "MatchTests", "MatchTests.vcxproj", "{7DB9372A-5895-4C69-BD58-EE7D074100A3}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7DB9372A-5895-4C69-BD58-EE7D074100A3}.Debug|Win32.ActiveCfg = Debug|Win32
+		{7DB9372A-5895-4C69-BD58-EE7D074100A3}.Debug|Win32.Build.0 = Debug|Win32
 		{DD6E7317-3A73-45BC-91B6-A63BCA3EFB4B}.Debug|Win32.ActiveCfg = Debug|Win32
 		{DD6E7317-3A73-45BC-91B6-A63BCA3EFB4B}.Debug|Win32.Build.0 = Debug|Win32
 		{8CE81312-5C1E-42DB-A7A4-9D215DBA1A11}.Debug|Win32.ActiveCfg = Debug|Win32

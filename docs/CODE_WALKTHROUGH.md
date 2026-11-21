@@ -1,8 +1,8 @@
-# Code walkthrough through Milestone 2
+# Code walkthrough through the Match milestone
 
 Ownership labels name the planned human maintainer; generation is disclosed in
-AI_DISCLOSURE.md. All functions use cdecl. Asm_Add and the seven grid functions
-contain inline assembly. Registers for every C++ function are chosen by MSVC, with no handwritten
+AI_DISCLOSURE.md. All functions use cdecl. Asm_Add, the seven grid functions, and
+the three Match functions contain inline assembly. Registers for C++ services are chosen by MSVC, with no handwritten
 register use or guarantees beyond the calling convention.
 
 ## Shared interface: src/game.h
@@ -13,7 +13,7 @@ later by row * COLS + col. `extern` declares shared storage without allocating
 another copy. The compiler guard rejects x64 and other compilers.
 
 The following declarations form the shared interface. Grid functions are now
-implemented below; Game, Shooter, Match, Score, and Num remain reserved only:
+implemented below, as are Match functions; Game, Shooter, Score, and Num remain reserved only:
 
 | Future function | Inputs | Planned output/purpose |
 | --- | --- | --- |
@@ -106,19 +106,20 @@ instructions and are not counted as handwritten assembly.
 
 ## Reserved source modules
 
-`game.cpp` and `shooter.cpp` belong to Usman; `match.cpp` belongs to
-Khizar; `score.cpp` belongs to Abdullah. They contain owner/concept comments
+`game.cpp` and `shooter.cpp` belong to Usman; `score.cpp` belongs to Abdullah.
+They contain owner/concept comments
 only, with no functions, inputs, outputs, register use, or gameplay behavior.
 
 ## Build and reporting tools
 
 `build.bat` compiles/runs the proof before compiling the preview; its failure
 label returns a failing exit code. `BubbleShooter.sln` contains two separate
-Debug|Win32 v145 console projects plus the isolated GridTests project. The existing
+Debug|Win32 v145 console projects plus the isolated GridTests and MatchTests projects. The existing
 two project files retain the user's VS 2026 configuration. `tools/ratio.ps1` has no named functions: it
 accepts optional SourceDirectory and ReportPath, scans ordinary quoted C++
 source line by line while tracking block comments and __asm braces, prints
-per-file totals, and writes Markdown. It counts lines, not instructions emitted
+per-file totals for src/ and tests/, and writes both production and combined
+percentages as LF Markdown. It counts lines, not instructions emitted
 by the compiler; wrapper braces count as C++ and comments never add assembly.
 
 ## Grid implementation: src/grid.cpp (Milestone 2)
@@ -164,8 +165,9 @@ SUB is not needed for these algorithms; no unused instructions were added.
 ## Isolated test harnesses
 
 Owner: Khizar. These files are outside src/, never enter the preview, and are
-excluded from the specified src-only ratio. They use plain C++ and no handwritten
-assembly registers; MSVC handles their registers and stack frames.
+excluded from the specified src-only ratio but disclosed in the combined ratio.
+The Grid and Preview harnesses use plain C++ with no handwritten assembly;
+MatchTests additionally uses two MOV instructions to inspect ESP.
 
 In tests/grid_tests.cpp:
 
@@ -191,3 +193,141 @@ tests/build_grid_tests.bat builds/runs both harnesses using x86 MSVC. Run the
 normal build first so PreviewSmoke tests a current bin/BubbleShooter.exe.
 GridTests.vcxproj also lets the team debug the grid harness in VS 2026 with
 Debug|Win32, v145, /W4, warnings as errors, and runtime checks.
+
+## Match implementation: src/match.cpp
+
+Owner: Khizar Sheikh. This module implements actual recursion and four-direction
+connectivity. It does not integrate shooting, menus, drawing, or other gameplay.
+All algorithmic work is in __asm blocks. TOTAL_CELLS is a file-local constant
+derived from COLS * ROWS, not a new shared declaration.
+
+Verified interfaces (all x86 cdecl):
+
+```cpp
+void __cdecl Match_Fill(int col, int row, int color, int mode);
+void __cdecl Match_Resolve(int col, int row);
+void __cdecl Match_DropFloating();
+int __cdecl Grid_Get(int col, int row);
+void __cdecl Grid_Set(int col, int row, int color);
+void __cdecl Score_AddPop(int count);
+void __cdecl Score_AddDrop(int count);
+void __cdecl Score_UpdateLevel();
+void __cdecl Score_UpdateDrop(int popped);
+```
+
+Grid and Match use **col before row**. Match returns void, never counts or points.
+The Score declarations still have no definitions in score.cpp and are not called
+here. Match updates the existing score in assembly as requested. Its shared data
+is grid, visited, popCount, and score. It does not modify level, highScore,
+shotsUntilDrop, or shot state. Grid_Init separately reads level.
+
+| Function | Inputs / outputs | Explicit registers and frame data | Logic |
+| --- | --- | --- | --- |
+| Match_Fill | col,row,color,mode; void. Reads grid; sets visited and adds to popCount. Never clears scratch itself or changes grid/score. | EAX, ECX, EDX; ESP for four argument pushes and cleanup. Parameters are reloaded by name from each frame. | Signed JL/JGE bounds checks precede index = (row << 4) + col. Reject visited or empty cells. Mode 0 requires exact full-width color equality; mode 1 accepts any nonempty color. Invalid modes do nothing. Mark first, increment count, then call itself UP, DOWN, LEFT, RIGHT. Each child receives four ints and is followed by ADD ESP,16. |
+| Match_Resolve | col,row; void. Pops matching bubbles and then floating bubbles, adding both point categories once. | EAX, EBX, ECX, ESI, EDI; ESP for calls. Local matchedCount at [ebp-4] in the reviewed build. | Validate selected cell before modifying any state. CLD/REP STOSB clear visited; popCount=0. Run Fill mode 0. If count<3, leave grid/score unchanged and do not call DropFloating. Otherwise save count, clear visited grid cells, multiply saved count by 10 using IMUL, add score, then call DropFloating once. |
+| Match_DropFloating | No parameters; void. Requires a preceding successful pop. Removes unanchored bubbles and adds 20 each. | EAX, ECX, ESI, EDI; ESP for calls. Local topCol at [ebp-4] in the reviewed build. | Clear scratch with CLD/REP STOSB, popCount=0. Loop all 16 top-row cells and call Fill(mode=1) for each nonempty root. Keep topCol in the frame across calls. Scan TOTAL_CELLS and remove only nonempty cells with visited=0, adding POINTS_DROP per removal. |
+
+Recursion means a function calls itself to solve the same smaller problem: visit
+one neighboring cell. Conditional jumps are its stopping rules. Without the
+visited array, two adjacent cells could repeatedly call each other forever.
+Marking before calling neighbors makes each occupied cell count at most once.
+Mode 0 asks "which touching bubbles have this color?" Mode 1 asks "which bubbles
+have any four-direction path to the ceiling?", regardless of color.
+
+Worked example: put color 2 at (0,0), (1,0), and (0,1), with everything else
+empty. Resolve(0,0) clears scratch and calls Fill(0,0,2,0). The starting cell is
+marked; its downward and rightward calls eventually mark the other two. Upward,
+leftward, empty, and already visited calls stop safely. popCount becomes 3.
+Resolve saves 3, removes all three visited cells, and awards 3*10=30 points.
+DropFloating then clears scratch; with no bubbles left it counts zero ceiling
+connections and removes nothing. Starting score 100 ends at 130. popCount ends
+at 0, illustrating why the matched count must be saved before the second search.
+
+Counts versus points: after a direct Fill, popCount is the number visited since
+the caller last reset it. After a valid failed Resolve, it is the small matching
+group size. After a successful Resolve, DropFloating has reused it as the number
+of remaining top-connected cells. It is never a reliable returned removal count.
+Invalid or empty Resolve calls preserve grid, score, visited, and popCount.
+
+### Stack frames and the actual compiled layout
+
+Conventional 32-bit cdecl frame for Match_Fill, high addresses at the top:
+
+```text
+higher addresses
+[ebp+20] = mode
+[ebp+16] = color
+[ebp+12] = row
+[ebp+8]  = col
+[ebp+4]  = return address
+[ebp]    = saved EBP       <- EBP stays fixed within this call
+lower addresses           <- stack grows downward as ESP decreases
+```
+
+This is verified, not assumed: the v145 compiler listing (compiler
+19.51.36260.0, /Od /RTC1) declares _col$=8, _row$=12, _color$=16, _mode$=20 and
+emits PUSH EBP / MOV EBP,ESP for Match_Fill. It has no local storage or manually
+saved working registers. At the end the compiler checks ESP against EBP,
+restores EBP with POP, and emits RET 0. The listing is an ignored text artifact
+at obj/MatchTests/match_listing.txt, generated by the test script; it is never
+assembled as an external .asm source. Other build flags can change details, so
+inspect the current Disassembly view rather than relying on offsets blindly.
+
+PUSH subtracts 4 from ESP and stores a 32-bit value. For each child the source
+pushes mode, color, new row, new col, in that order. CALL then pushes the address
+of the next instruction and jumps into Match_Fill. Its compiler prologue saves
+the parent's EBP and sets a new EBP for the child. Each frame therefore retains
+its own coordinates even while the same function runs recursively.
+
+RET takes the saved return address off the stack and resumes the caller. It does
+not remove the four cdecl arguments; ADD ESP,16 does that afterward. POP reads
+the value at ESP and then adds 4 to ESP. No explicit POP is needed in our Fill
+body because no parent register values are kept across calls; we reload the
+parameters. MSVC uses POP in its epilogue to restore EBP and any callee-preserved
+registers used by the other functions. An unbalanced ESP could make later data
+look like an argument, saved register, or return address and corrupt execution.
+
+The reviewed Resolve frame reserves matchedCount at EBP-4 and saves EBX/ESI/EDI;
+DropFloating reserves topCol at EBP-4 and saves ESI/EDI. MSVC generates these
+saves/restores. No code manually changes EBP. Every one of the four recursive
+call sites, plus the Resolve and DropFloating Fill calls, has exactly four
+argument PUSH instructions and ADD ESP,16. The zero-argument DropFloating call
+needs no argument cleanup. /RTC1 checks every Fill return; top-level ESP equality
+is additional evidence, not the only stack check.
+
+The snake test uses seven full even rows and six odd-row connectors alternating
+between col 15 and col 0. It contains 7*16+6=118 cells. Empty separator-row cells
+prevent side shortcuts, so walking from (0,0) requires a chain of 118 marked
+recursive frames before unwinding. Rejected neighbor calls briefly add frames
+too. The full-grid test separately visits all 208 cells exactly once.
+
+### Shooter integration contract (instructions only)
+
+After a bubble lands, the future shooter should store it with
+Grid_Set(col,row,color), save score if it needs to detect a successful pop, and
+call Match_Resolve(col,row) once. Match already removes and scores floaters after
+a successful pop. Do not call Match_DropFloating again and do not award either
+pop or floating points through Score_AddPop/Score_AddDrop a second time.
+
+With this void interface, compare score before/after the synchronous Resolve to
+detect a successful pop for the later ceiling counter. Do not use popCount as
+the matched count after Resolve. There are no removal-count return values.
+Continue with the planned ceiling/danger/level/HUD work in its own milestone.
+No shooter, score, state-machine, sound, or rendering code was added here.
+game.h changed comments only: signatures, constants, and data declarations remain
+identical. Optional beep feedback remains deferred with the sound services.
+
+### MatchTests harness
+
+tests/match_tests.cpp is deterministic and writes grid[] directly. Check records
+a condition/description and updates totals; Reset clears grid, visited, popCount,
+score and related test state; VisitedSum returns the sum of marker bytes;
+Occupied returns the number of nonempty cells. TestFill exercises both modes,
+guards, corners, visited reuse, the full grid, the 118-cell path, and two MOV
+instructions reading ESP around a normal C++ call. TestResolve covers pop sizes,
+no-match behavior, invalid/empty inputs, full-grid points, and repeated calls.
+TestFloating checks mixed-color anchors, support removal, exact combined scores,
+multiple roots, stale scratch, and no-match floaters. These helpers take no
+arguments except Check(condition,description); only the sum/count helpers and
+main return values. main returns 0 when all 25 checks pass and 1 otherwise.
+MSVC chooses helper registers; TestFill explicitly reads ESP without changing it.

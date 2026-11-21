@@ -1,11 +1,140 @@
 # Testing record
 
-Owner: Abdullah bin Faheem; Milestone 2 grid checks contributed for Khizar's module.
+Owner: Abdullah bin Faheem; Grid and Match checks contributed for Khizar's modules.
 21 November 2026. Khizar confirmed the Milestone 1 preview runs in VS 2026 and
-both existing projects use v145. Milestone 2 is authorized and complete below;
-no later milestone has been started.
+both existing projects use v145. The requested Match milestone is now complete.
+Shooter/gameplay integration has not been started.
 
-## Milestone 2 actual results
+## Match milestone: actual staged results
+
+Raw captured build and runtime output is in [MATCH_TEST_OUTPUT.md](MATCH_TEST_OUTPUT.md).
+No test assertion failed or was weakened. One initial test build failed before
+execution because /Fa: was an invalid listing-path spelling; it was corrected.
+The final script compiles match.cpp separately, saving a generated listing as
+obj/MatchTests/match_listing.txt. No external .asm source is used as build input.
+
+| Stage, in execution order | Match tests | Existing regressions |
+| --- | --- | --- |
+| 1: recursive Match_Fill only | 10 checks, 0 failures | build.bat passed; proof=12; GridTests 31/0; PreviewSmoke 4 PASS |
+| 2: add Match_Resolve | 17 checks, 0 failures | build.bat passed; proof=12; GridTests 31/0; PreviewSmoke 4 PASS |
+| 3: add real Match_DropFloating | 25 checks, 0 failures | build.bat passed; proof=12; GridTests 31/0; PreviewSmoke 4 PASS |
+| Final VS 2026 solution build and execution | Four v145 Debug|Win32 projects built; solution-built MatchTests 25/0 | GridTests 31/0; PreviewSmoke 4 PASS; proof=12; all five executable PE headers verified x86 |
+
+Stage 2 used a temporary no-op DropFloating body so the intermediate production
+build could link while pop logic was tested before connectivity removal. The
+scaffold was replaced completely in stage 3. All stage-2 tests passed again with
+the real floating implementation. Existing GridTests and PreviewSmoke sources
+and behavior were left unchanged.
+
+The 22 requested test cases map to these actual checks:
+
+| Requested test | Executed evidence |
+| --- | --- |
+| 1: exactly 3 | Resolve removes 3 and adds 30 to score 100 |
+| 2: only 2 | Grid, floaters and score unchanged |
+| 3: more than 3 | Five-cell connected component removed for 50 points |
+| 4: adjacent different colors | TestFill excludes them in mode 0; mixed-color ceiling chain remains after a different group pops |
+| 5: diagonals | Fill excludes diagonals; Resolve cannot match a diagonal-only group |
+| 6: boundaries | All four corners plus out-of-range calls exercised; bounds checks reviewed before indexing |
+| 7: visited reuse | Repeating Fill on a visited start leaves count unchanged |
+| 8: full 208 cells | Immediately after Fill: popCount=208, visited sum=208. Resolve empties grid and adds exactly 2080; no expectation of 208 after connectivity search |
+| 9: genuine deep path | 118-cell one-wide snake, empty separator rows, alternating end connectors; every occupied cell visited and only those cells |
+| 10: ESP | MOV reads ESP around a normal C++ call on the full grid; equality passes. Listing reviewed for each of four recursive calls: four pushes then ADD ESP,16; /RTC1 checks each Fill return |
+| 11: mixed-color attachment | Six-cell mixed-color ceiling chain retained |
+| 12: floating removal after pop | Popping a three-cell support removes two detached bubbles while preserving a ceiling anchor |
+| 13: nonzero initial score | 100 + 3*10 = 130 |
+| 14: pop 3 and drop 2 | 100 + 3*10 + 2*20 = 170 |
+| 15: grid becomes empty | Verified by the real Grid_IsEmpty after successful pops |
+| 16: no-match must not drop | Two-match leaves disconnected bottom-row bubble and score 900 unchanged |
+| 17: empty start | Grid, score, visited and popCount unchanged |
+| 18: invalid coordinates | Negative, oversized, INT_MIN/MAX inputs leave grid, score and scratch unchanged |
+| 19: repeated resolution | No duplicate score on an empty cell; new groups ignore stale match/connectivity marks |
+| 20: GridTests regression | Original 31 checks pass after each stage |
+| 21: preview regression | Normal build and original 4 real-console checks pass after each stage |
+| 22: x86 execution | MSVC v145 builds, /Od /RTC1 /W4 /WX harness; all actual programs run and x86 PE headers checked |
+
+No unresolved compilation or runtime problems were observed. The solution build
+used the same approved outside-sandbox MSBuild path as Milestone 2 because its
+file tracker is restricted inside the sandbox. No toolset or existing project
+settings were changed. Human F5 inspection and terminal visual quality remain
+manual checks, rather than claimed automated results.
+
+Current ratios from tools/ratio.ps1:
+
+| Scope | Assembly | C++ | Assembly % | C++ % |
+| --- | ---: | ---: | ---: | ---: |
+| Production src/ (final requirement scope) | 268 | 264 | 50.38 | 49.62 |
+| Tests only | 2 | 416 | 0.48 | 99.52 |
+| Combined src/ + tests/ | 270 | 680 | 28.42 | 71.58 |
+
+The two test assembly lines read ESP; they are not counted as production code.
+The full production source still falls below the final minimum 70% / target
+72-75%. match.cpp itself is 148 assembly source lines / 19 C++ lines (88.62%).
+Labels count as assembly source, not as executed instructions. No padding added.
+The dual-scope ratio aggregation passed a separate fixture: production 2/4,
+tests 1/3, combined 3/7 (30%). An initial direct PowerShell invocation was blocked
+by execution policy; its wrapper printed an invalid success message after
+nonterminating errors. That message was discarded. The rerun used the documented
+process-local ExecutionPolicy Bypass, stopped on any error, and asserted every
+expected row successfully. No system-wide execution policy was changed.
+
+## Run MatchTests and inspect recursion in VS 2026
+
+From **x86 Native Tools Command Prompt for VS 2026**, with installed v145:
+
+```bat
+cd /d "C:\Users\Khizar\COAL PROJECT\COAL-Bubble-Shooter"
+tests\build_match_tests.bat
+```
+
+Expect 25 PASS lines and `Match tests: 25 checks, 0 failures`, exit code 0.
+The script compiles the real Match/Grid/data/console modules with /Od, /RTC1,
+/W4 and /WX. It does not change or invoke the normal preview's main function.
+
+To rerun all current regressions:
+
+```bat
+build.bat
+tests\build_match_tests.bat
+tests\build_grid_tests.bat
+```
+
+To regenerate both ratio measurements from PowerShell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\ratio.ps1
+```
+
+Open BubbleShooter.sln in VS 2026; choose Debug | Win32 (v145), Build Solution,
+then set MatchTests as startup project. Ctrl+F5 runs without debugging. For viva
+practice use these steps with F5:
+
+1. Set a breakpoint in Match_Fill near the bounds checks.
+2. Open Debug > Windows > Call Stack and Debug > Windows > Registers.
+3. Open Debug > Windows > Memory > Memory 1; enter ESP as the address (or use the
+   register's displayed value). Watch ESP, EBP, col, row, visited, and popCount.
+4. Step instruction by instruction in Disassembly. Observe the four argument
+   pushes, then step into CALL Match_Fill. The Call Stack gains a child frame.
+5. Observe ESP decrease as arguments, return address, and saved EBP are pushed.
+   This is what downward stack growth means: new data uses lower addresses.
+6. Select parent and child Call Stack entries to see separate col/row parameters.
+   The reviewed /Od frame has col at EBP+8, row +12, color +16, mode +20.
+7. Follow a marked cell's repeated visit: its early jump stops recursion without
+   increasing popCount. Follow an unvisited neighbor: it is marked before calls.
+8. Step through the compiler's return: POP EBP restores the parent frame, RET
+   resumes after CALL, then ADD ESP,16 discards the four arguments. Verify ESP
+   returns to the parent's pre-push value. Watch count 208 immediately after the
+   full-grid Fill; do not expect that count after Resolve calls connectivity mode.
+
+The text compiler listing verified the offsets and all six Fill call sites
+(four recursive, one Resolve, one DropFloating). The conventional diagram and
+worked example are in CODE_WALKTHROUGH.md. No production frame is hand-written
+or naked. /Od is retained in all four solution projects.
+
+## Historical Milestone 2 actual results
+
+The following is the preserved grid milestone record; its old current ratio
+and project-count descriptions are historical and superseded above.
 
 | Check actually run | Result | Evidence |
 | --- | --- | --- |
@@ -149,5 +278,5 @@ static foundation. No gameplay has been implemented or tested.
 | Pause/resume, ESC menu, clean restart | Pending | Deferred |
 | Empty grid advances level with more rows | Pending | Deferred |
 | No flicker during play or long-play crash | Pending | Deferred |
-| Ratio at least 72% | Not met | Milestone 2: 32.88%; final target pending |
+| Ratio at least 72% | Not met | Match milestone production: 50.38%; final target pending |
 | Assembly commented; required docs exist | Local pass; user pending | Three proof instructions documented |
