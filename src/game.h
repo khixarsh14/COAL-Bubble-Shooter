@@ -30,7 +30,7 @@ extern int score, level, highScore, shotsUntilDrop;
 extern int gameState, keyBits, popCount;
 extern char numBuf[12];
 
-// Reserved interfaces for later milestones: declarations only, never called yet.
+// Shared interfaces; Game/Shooter/Score remain reserved for later integration.
 // Usman Khan
 void __cdecl Game_Reset();
 void __cdecl Game_Update();
@@ -45,8 +45,14 @@ void __cdecl Grid_ShiftDown();
 void __cdecl Grid_AddTopRow();
 int __cdecl Grid_CheckDanger();
 int __cdecl Grid_IsEmpty();
+// Fill marks visited and increments popCount; mode 0=same color, 1=any nonempty.
+// Caller clears visited and popCount before a new search. Grid/score stay unchanged.
 void __cdecl Match_Fill(int col, int row, int color, int mode);
+// Match owns scoring: +POINTS_POP per match bubble, then +POINTS_DROP per floater.
+// Shooter must NOT award either kind of points again or call DropFloating twice.
+// Both functions return void, NOT counts or points. popCount is reused scratch.
 void __cdecl Match_Resolve(int col, int row);
+// Invoke only after a successful match; mode-1 search overwrites visited/popCount.
 void __cdecl Match_DropFloating();
 // Abdullah bin Faheem
 void __cdecl Score_AddPop(int count);

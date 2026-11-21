@@ -19,8 +19,56 @@ not a claim that the listed owner wrote the generated code by hand.
 | README.md | Appended Milestone 1 documentation; original introduction preserved |
 | docs/CODE_WALKTHROUGH.md, OUT_OF_OUTLINE.md, AI_DISCLOSURE.md, TESTING.md | Initial documentation |
 
-No human code review or manual changes are claimed yet. Team members should
-review, build, test, and understand every generated line before submission.
+Khizar reported that the Milestone 1 preview runs in VS 2026 and that both
+existing projects were retargeted to v145 before Milestone 2. Detailed human
+line-by-line review is not claimed. Team members should review, build, test,
+and understand every generated line before submission.
+
+## Milestone 2 assistance
+
+Codex generated the following changes on 21 November 2026. Ownership assignments
+remain as specified; match.cpp, main.cpp, game.cpp, and shooter.cpp were unchanged.
+
+| Files | Generated changes |
+| --- | --- |
+| .gitattributes | Requested line-ending rules; normalized-content comparison without staging |
+| src/grid.cpp | Grid_Init, Grid_Get, Grid_Set, Grid_ShiftDown, Grid_AddTopRow, Grid_CheckDanger, Grid_IsEmpty |
+| src/console.cpp | stdlib include and minimal implementation of the already declared Con_Rand service |
+| tests/grid_tests.cpp | Check, TestInit, TestGetSet, TestShiftAndTop, TestScans, TestRandom, main |
+| tests/preview_smoke.cpp | HasText and main for actual preview regression checks |
+| tests/build_grid_tests.bat | Separate x86 test build/run commands |
+| GridTests.vcxproj, BubbleShooter.sln | Isolated v145 Debug|Win32 grid test project and solution entry |
+| tools/ratio.ps1 | Updated milestone/scope explanation; counting algorithm unchanged |
+| docs/CODE_WALKTHROUGH.md, TESTING.md, RATIO.md, OUT_OF_OUTLINE.md, AI_DISCLOSURE.md | Grid behavior, registers, test evidence, ratio, and disclosure |
+
+The existing BubbleShooter.vcxproj and AsmProof.vcxproj v145 configurations were
+preserved. No human modifications made after this generation are claimed here.
+
+## Match milestone assistance
+
+Codex generated the Match milestone at Khizar's request using the attached
+CODEX PROMPT 03 and the full CODEX_CONTEXT.md specification. All three Match
+functions retain their original void cdecl signatures. No human review beyond
+the reported earlier milestone testing is claimed.
+
+| Files | Generated changes |
+| --- | --- |
+| src/match.cpp | Match_Fill (actual recursive inline assembly), Match_Resolve, Match_DropFloating; direct ownership of pop/floating score updates |
+| src/game.h | Comments explaining scratch state, void results, coordinate order context, and no duplicate scoring; no signature, constant, or data changes |
+| tests/match_tests.cpp | Check, Reset, VisitedSum, Occupied, TestFill, TestResolve, TestFloating, main; deterministic direct-grid tests and ESP checks |
+| tests/build_match_tests.bat | Separate MSVC v145 x86 test build/run and compiler text listing |
+| MatchTests.vcxproj, BubbleShooter.sln | Isolated Debug|Win32 v145 MatchTests project and solution entry |
+| tools/ratio.ps1 | Production, test-only and combined summaries; source-line scanner unchanged |
+| docs/RATIO.md | Actual production and combined report |
+| docs/CODE_WALKTHROUGH.md, TESTING.md | Verified signatures, algorithm/stack explanations, integration contract and actual staged results |
+| docs/MATCH_TEST_OUTPUT.md | Captured raw output from staged runs and solution-built programs |
+| docs/AI_DISCLOSURE.md | This disclosure update |
+
+grid.cpp, score.cpp, console.cpp/.h, data.cpp, main.cpp, shooter.cpp, game.cpp,
+the existing test harnesses and three existing project files were not changed.
+No new outside-outline runtime concept was introduced: recursion, cdecl stack
+operations, integer scoring, and the ESP-reading test instructions are already
+covered by the course. OUT_OF_OUTLINE.md therefore remains unchanged.
 
 | Member | Date | Files/functions reviewed | Changes made by hand | Build/test evidence |
 | --- | --- | --- | --- | --- |

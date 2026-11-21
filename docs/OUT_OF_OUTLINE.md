@@ -60,3 +60,45 @@ and uses the course's ordinary integer instructions.
 No file persistence, high-score file I/O, recursion fallback, or other extra
 runtime concepts have been implemented. The PowerShell ratio scanner and batch
 build are development tools, not game assembly topics.
+
+## Pseudorandom colors
+
+**What:** The basic C runtime rand() function generates a sequence of integers.
+
+**Why:** The specified grid initialization and new-row service need colors 1..5.
+
+**How:** Con_Rand(n) returns rand() % n for n>0, giving 0..n-1. The assembly caller
+adds 1 for a bubble color. Nonpositive n returns 0 instead of dividing by zero.
+This is simple pseudorandomness, not security randomness or a guarantee of equal
+frequencies. Production seeding has not been added: the CRT's default sequence
+repeats across fresh processes. The isolated tests explicitly use srand with
+fixed seeds to make failures reproducible. Later startup integration can seed it.
+
+**Where:** src/console.cpp, Con_Rand (with a reference comment); callers are
+src/grid.cpp, Grid_Init and Grid_AddTopRow. tests/grid_tests.cpp seeds tests only.
+
+**Simpler alternative:** A fixed color would not meet the random-color
+requirement. A custom assembly generator adds logic that is unnecessary when
+the specification already allows random numbers as a C++ service.
+
+## Preview regression harness
+
+**What:** Additional Win32 process and console calls used only by an isolated test.
+
+**Why:** Verify that adding grid functions preserves the real preview's frame
+and ESC exit without changing Usman's main.cpp or requiring manual input.
+
+**How:** CreateProcess starts bin/BubbleShooter.exe with a hidden new console.
+FreeConsole/AttachConsole attach only the test process to that child console.
+CreateFile opens CONOUT$/CONIN$; ReadConsoleOutputCharacter checks frame text.
+WriteConsoleInput supplies an ESC key event. WaitForSingleObject and
+GetExitCodeProcess confirm exit. Cursor queries check visibility before/after.
+Sleep bounds polling intervals. CloseHandle releases resources. On failure,
+TerminateProcess cleans up only this test's own child process.
+
+**Where:** tests/preview_smoke.cpp, HasText and main, with a reference comment.
+These calls do not enter the game executable or its code ratio.
+
+**Simpler alternative:** Human inspection is useful and remains requested. This
+small automated check also provides a repeatable test of actual console output
+and exit behavior, rather than assuming a successful build means it ran.
