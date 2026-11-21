@@ -15,7 +15,8 @@ The build runs the separate assembly proof and then builds the game. For Visual 
 
 - Main menu. **1** starts, **2** shows help, **3** exits.
 - Round. **Left/Right** aim, **Space** shoots, **P** pauses or resumes, and **Esc** returns to the menu. On game over, press any key to return to the menu.
-- Connect three same-color bubbles orthogonally to pop them. Detached bubbles fall for bonus points. Consecutive misses lower the ceiling, and a bubble surviving on or below the danger line ends the round. Clearing the board starts the next level. The high score lasts for the current session.
+- The dotted guide shows the next shot's path, including wall bounces. The `+` marks its predicted landing cell. The guide returns after each shot.
+- Connect three same-color bubbles orthogonally to pop them. Detached bubbles fall for bonus points. Seven consecutive misses lower the ceiling, and a bubble surviving on or below the danger line ends the round. Clearing the board wins the round. A win or loss returns to the menu on a fresh keypress. The high score lasts for the current session.
 
 ## Verify
 
@@ -36,7 +37,7 @@ The grid test script runs the live console smoke test after GridTests. The ratio
 - `src/shooter.cpp` handles aiming, fixed-point projectile motion, and placement.
 - `src/game.cpp` owns round state, input edges, and the order of post-shot updates.
 - `src/grid.cpp` implements grid storage operations. `src/match.cpp` owns flood-fill, removal, and points awarded for a placement.
-- `src/score.cpp` owns the miss counter, ceiling shifts, level progression, and decimal conversion.
+- `src/score.cpp` owns the miss counter, ceiling shifts and decimal conversion.
 - `src/console.cpp` polls Win32 input, composes the board and HUD, and draws changed cells. `src/main.cpp` owns the console lifetime and frame loop.
 - `src/game.h` and `src/console.h` declare shared cdecl interfaces. `src/data.cpp` defines shared storage.
 

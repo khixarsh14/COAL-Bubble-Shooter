@@ -69,14 +69,13 @@ int main()
     const bool board = help && Tap(input, '1') && WaitText(screen, 49, 7, "7") &&
         HasText(screen, 15, 16, "O") &&
         HasText(screen, 1, 2, "O") && HasText(screen, 1, 13, "- ") &&
-        HasText(screen, 49, 7, "7") && HasText(screen, 15, 15, "^");
-    bool shot = board && Tap(input, VK_SPACE) && WaitText(screen, 15, 14, "O");
-    if (shot) {
-        for (int attempt = 0; attempt < 150 && !HasText(screen, 15, 7, "O"); ++attempt)
-            Sleep(20);
-        shot = HasText(screen, 15, 14, "  ") && HasText(screen, 15, 13, "- ") &&
-            HasText(screen, 15, 15, "^");
-    }
+        HasText(screen, 39, 3, "HIGH") && HasText(screen, 15, 15, "^");
+    const bool guide = board && HasText(screen, 15, 14, ".") && HasText(screen, 15, 7, "+") &&
+        Tap(input, VK_LEFT) && WaitText(screen, 11, 7, "+") && HasText(screen, 15, 7, " ") &&
+        Tap(input, VK_RIGHT) && WaitText(screen, 15, 7, "+");
+    const bool shot = guide && Tap(input, VK_SPACE) && WaitText(screen, 16, 14, "O") &&
+        WaitText(screen, 15, 14, ". ") && HasText(screen, 15, 13, "-.") &&
+        HasText(screen, 15, 15, "^");
     const bool pause = shot && Tap(input, 'P') && WaitText(screen, 1, 18, "PAUSED") &&
         Tap(input, 'P') && WaitText(screen, 1, 18, "      ");
     DWORD exitCode = 1;
@@ -97,8 +96,9 @@ int main()
     printf("%s: menu and hidden cursor\n", hidden ? "PASS" : "FAIL");
     printf("%s: help screen returns to menu\n", help ? "PASS" : "FAIL");
     printf("%s: live board, launcher, aim, danger line and drop HUD\n", board ? "PASS" : "FAIL");
-    printf("%s: moving shot restores traversed cells\n", shot ? "PASS" : "FAIL");
+    printf("%s: dotted guide updates after aiming\n", guide ? "PASS" : "FAIL");
+    printf("%s: moving shot restores traversed cells and guide\n", shot ? "PASS" : "FAIL");
     printf("%s: pause and resume\n", pause ? "PASS" : "FAIL");
     printf("%s: menu exit with code 0 and restored cursor\n", restored ? "PASS" : "FAIL");
-    return hidden && help && board && shot && pause && restored ? 0 : 1;
+    return hidden && help && board && guide && shot && pause && restored ? 0 : 1;
 }

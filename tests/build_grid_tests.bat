@@ -9,7 +9,7 @@ if /I not "%VSCMD_ARG_TGT_ARCH%"=="x86" (
 )
 if not exist "bin" mkdir "bin"
 if not exist "obj\GridTests" mkdir "obj\GridTests"
-cl /nologo /W4 /WX /EHsc /Od /Zi /Gd /RTC1 /Fo:obj\GridTests\ /Fd:obj\GridTests\compile.pdb /Fe:bin\GridTests.exe tests\grid_tests.cpp src\grid.cpp src\data.cpp src\console.cpp src\score.cpp /link /MACHINE:X86 /PDB:bin\GridTests.pdb
+cl /nologo /W4 /WX /EHsc /Od /Zi /Gd /RTC1 /Fo:obj\GridTests\ /Fd:obj\GridTests\compile.pdb /Fe:bin\GridTests.exe tests\grid_tests.cpp src\grid.cpp src\data.cpp src\console.cpp src\score.cpp src\shooter.cpp src\match.cpp /link /MACHINE:X86 /PDB:bin\GridTests.pdb
 if errorlevel 1 goto failed
 bin\GridTests.exe
 if errorlevel 1 goto failed

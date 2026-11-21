@@ -1,6 +1,7 @@
 #include "../src/game.h"
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int checks, failures;
@@ -92,6 +93,82 @@ static void TestShooter()
           "A diagonal substep hits the vertical intermediate cell first");
 }
 
+static void TestPrediction()
+{
+    const int knownLanding[] = {14, LAUNCH_COL, 2};
+    const int sampleAngles[] = {0, 4, 8};
+    BYTE guide[COLS * ROWS];
+    memset(grid, 0, sizeof(grid));
+    for (int example = 0; example < 3; ++example) {
+        Shooter_Predict(sampleAngles[example], guide);
+        bool touchedWall = false;
+        const int wall = example == 0 ? 0 : COLS - 1;
+        for (int row = 1; row < ROWS; ++row)
+            touchedWall |= guide[row * COLS + wall] == GUIDE_DOT;
+        Check(guide[knownLanding[example]] == GUIDE_LANDING && (example == 1 || touchedWall),
+              example == 0 ? "Guide reflects at the left wall before landing" :
+              example == 2 ? "Guide reflects at the right wall before landing" :
+              "Straight guide reaches the open ceiling at the launch column");
+    }
+
+    bool matchesLiveShot = true;
+    for (int fixture = 0; fixture < 3; ++fixture) {
+        for (int index = 0; index < NUM_ANGLES; ++index) {
+            memset(grid, 0, sizeof(grid));
+            if (fixture == 1) {
+                for (int col = 0; col < COLS; ++col) Grid_Set(col, col % 3, 3);
+                Grid_Set(1, 8, 3);
+                Grid_Set(14, 7, 3);
+            }
+            if (fixture == 2) Grid_Set(LAUNCH_COL, ROWS - 1, 3);
+            Shooter_Predict(index, guide);
+            int target = -1, targets = 0;
+            for (int cell = 0; cell < COLS * ROWS; ++cell) {
+                if (guide[cell] != 0 && grid[cell] != EMPTY) matchesLiveShot = false;
+                if (guide[cell] != GUIDE_LANDING) continue;
+                target = cell;
+                ++targets;
+            }
+            shotActive = 0;
+            aimIndex = index;
+            curColor = 2;
+            nextColor = 4;
+            Shooter_Fire();
+            for (int frame = 0; frame < 32 && shotActive; ++frame) Shooter_Update();
+            const int actual = lastRow < 0 ? -1 : lastRow * COLS + lastCol;
+            matchesLiveShot &= !shotActive && target == actual && targets == (actual >= 0);
+            if (actual >= 0) matchesLiveShot &= Grid_Get(lastCol, lastRow) == 2;
+        }
+    }
+    Check(matchesLiveShot, "All nine guides agree with live shots on three fixtures including blocked launches");
+
+    memset(grid, 0, sizeof(grid));
+    Grid_Set(LAUNCH_COL, 5, 3);
+    Shooter_Predict(4, guide);
+    Check(guide[6 * COLS + LAUNCH_COL] == GUIDE_LANDING &&
+          guide[5 * COLS + LAUNCH_COL] == 0 && guide[4 * COLS + LAUNCH_COL] == 0,
+          "Guide stops at the last empty cell before an obstacle");
+
+    BYTE originalGrid[sizeof(grid)], originalVisited[sizeof(visited)];
+    memcpy(originalGrid, grid, sizeof(grid));
+    memset(visited, 123, sizeof(visited));
+    memcpy(originalVisited, visited, sizeof(visited));
+    ShotAt(5, 2500, 128, -222);
+    const int* const state[] = {&shotX, &shotY, &shotDX, &shotDY, &lastCol, &lastRow,
+        &shotActive, &aimIndex, &curColor, &nextColor, &score, &popCount,
+        &shotsUntilDrop, &gameState, &keyBits, &highScore};
+    int originalState[_countof(state)];
+    for (unsigned i = 0; i < _countof(state); ++i) originalState[i] = *state[i];
+    srand(1234);
+    const int expectedRandom = rand();
+    srand(1234);
+    for (int index = 0; index < NUM_ANGLES; ++index) Shooter_Predict(index, guide);
+    bool unchanged = memcmp(originalGrid, grid, sizeof(grid)) == 0 &&
+        memcmp(originalVisited, visited, sizeof(visited)) == 0 && rand() == expectedRandom;
+    for (unsigned i = 0; i < _countof(state); ++i) unchanged &= originalState[i] == *state[i];
+    Check(unchanged, "Prediction preserves board, match scratch, live shot, game state and RNG");
+}
+
 static void TestStates()
 {
     gameState = STATE_MENU;
@@ -103,7 +180,7 @@ static void TestStates()
     Tick(KEY_ESC);
     Check(gameState == STATE_MENU, "Held ESC cannot exit on the next state");
     Tick(KEY_1 | KEY_ANY);
-    Check(gameState == STATE_PLAYING && level == 1 && shotsUntilDrop == 7, "Menu 1 starts a clean round");
+    Check(gameState == STATE_PLAYING && shotsUntilDrop == 7, "Menu 1 starts a clean round with seven misses allowed");
     Tick(KEY_SPACE | KEY_ANY);
     const int y = shotY;
     Tick(KEY_P | KEY_ANY);
@@ -118,20 +195,36 @@ static void TestStates()
     Grid_Set(0, 0, 2);
     Grid_Set(1, 0, 2);
     score = 0;
+    highScore = 0;
+    shotsUntilDrop = 1;
     ShotAt(2, SUBPIX + 1, 0, -SUBPIX);
     Tick(0);
-    Check(score == 30 && level == 2 && shotsUntilDrop == 6 &&
-          Grid_Get(0, 5) != EMPTY && Grid_Get(0, 6) == EMPTY,
-          "One placement scores once and refills an empty board for the next level");
+    Check(gameState == STATE_WIN && Grid_IsEmpty() && score == 30 && highScore == 30 &&
+          shotsUntilDrop == 7, "Clearing the board wins, scores once, and resets the drop counter");
+    Tick(0);
+    Check(gameState == STATE_WIN && Grid_IsEmpty(), "Victory leaves the board empty until restart");
+    Tick(KEY_ANY);
+    Check(gameState == STATE_MENU, "A fresh key returns from victory");
+    Tick(KEY_1);
+    Check(gameState == STATE_PLAYING && score == 0 && highScore == 30 && shotsUntilDrop == 7 &&
+          Grid_Get(0, 4) != EMPTY && Grid_Get(0, 5) == EMPTY, "Restart after victory creates a fresh five-row board");
 
     memset(grid, 0, sizeof(grid));
-    Grid_Set(8, DANGER_ROW - 1, 1);
-    shotsUntilDrop = 1;
-    highScore = 0;
-    ShotAt(2, SUBPIX + 1, 0, -SUBPIX);
+    Grid_Set(15, DANGER_ROW - 1, 1);
+    bool countdown = true;
+    for (int miss = 0; miss < 6; ++miss) {
+        ShotAt(miss, SUBPIX + 1, 0, -SUBPIX);
+        curColor = 2 + miss % 2;
+        Tick(0);
+        countdown &= gameState == STATE_PLAYING && shotsUntilDrop == 6 - miss &&
+            Grid_Get(15, DANGER_ROW - 1) == 1 && Grid_Get(15, DANGER_ROW) == EMPTY;
+    }
+    Check(countdown, "The first six misses do not shift the ceiling");
+    ShotAt(6, SUBPIX + 1, 0, -SUBPIX);
     Tick(0);
-    Check(gameState == STATE_GAMEOVER && Grid_Get(8, DANGER_ROW) == 1 &&
-          Grid_Get(2, 1) == 2 && highScore == 30, "Last miss shifts exactly once and detects danger");
+    Check(gameState == STATE_GAMEOVER && Grid_Get(15, DANGER_ROW) == 1 &&
+          Grid_Get(6, 1) == 2 && highScore == 30 && shotsUntilDrop == 7,
+          "The seventh miss shifts once, resets the counter, and detects danger");
     Tick(KEY_ANY);
     Check(gameState == STATE_MENU, "A fresh unrelated key returns from game over");
     Tick(KEY_1);
@@ -161,15 +254,16 @@ static void TestScore()
     Score_AddDrop(2);
     Score_AddPop(-1);
     Check(score == 74, "Standalone point helpers apply the correct multipliers");
-    level = 99;
+    shotsUntilDrop = 2;
     Score_UpdateDrop(1);
     Score_UpdateDrop(0);
-    Check(shotsUntilDrop == 2, "High-level drop interval is clamped to three");
+    Check(shotsUntilDrop == 6, "A pop restores seven misses and the next miss consumes one");
 }
 
 int main()
 {
     TestShooter();
+    TestPrediction();
     TestStates();
     TestScore();
     printf("Game tests: %d checks, %d failures\n", checks, failures);

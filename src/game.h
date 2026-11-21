@@ -14,9 +14,11 @@ enum {
     MIN_MATCH = 3, POINTS_POP = 10, POINTS_DROP = 20, SUBPIX = 256
 };
 enum { LAUNCH_COL = (COLS - 1) / 2, LAUNCH_ROW = ROWS };
+enum { STARTING_ROWS = 5, DROP_INTERVAL = 7 };
+enum { GUIDE_DOT = 1, GUIDE_LANDING = 2 };
 enum {
     STATE_MENU = 0, STATE_PLAYING = 1, STATE_PAUSED = 2,
-    STATE_GAMEOVER = 3, STATE_HELP = 4, STATE_EXIT = 5
+    STATE_GAMEOVER = 3, STATE_HELP = 4, STATE_EXIT = 5, STATE_WIN = 6
 };
 enum {
     KEY_LEFT = 1, KEY_RIGHT = 2, KEY_SPACE = 4, KEY_P = 8,
@@ -27,7 +29,7 @@ extern BYTE grid[COLS * ROWS], visited[COLS * ROWS];
 extern int angleDX[NUM_ANGLES], angleDY[NUM_ANGLES];
 extern int aimIndex, curColor, nextColor, shotActive;
 extern int shotX, shotY, shotDX, shotDY, lastCol, lastRow;
-extern int score, level, highScore, shotsUntilDrop;
+extern int score, highScore, shotsUntilDrop;
 extern int gameState, keyBits, popCount;
 extern char numBuf[12];
 
@@ -37,6 +39,8 @@ void __cdecl Game_Update();
 void __cdecl Shooter_Aim(int step);
 void __cdecl Shooter_Fire();
 void __cdecl Shooter_Update();
+// Writes a COLS*ROWS row-major mask to a separate caller-owned buffer.
+void __cdecl Shooter_Predict(int index, BYTE* guide);
 // Khizar Sheikh
 void __cdecl Grid_Init();
 int __cdecl Grid_Get(int col, int row);
@@ -57,7 +61,6 @@ void __cdecl Match_DropFloating();
 // Match_Resolve already awards match and floating points.
 void __cdecl Score_AddPop(int count);
 void __cdecl Score_AddDrop(int count);
-void __cdecl Score_UpdateLevel();
 // Updates the miss counter and owns any ceiling shift and top-row refill.
 void __cdecl Score_UpdateDrop(int popped);
 // The caller supplies room for an int32 decimal string and its terminator.

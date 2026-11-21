@@ -24,7 +24,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="tests\grid_tests.cpp" /><ClCompile Include="src\grid.cpp" />
-    <ClCompile Include="src\data.cpp" /><ClCompile Include="src\console.cpp" /><ClCompile Include="src\score.cpp" />
+    <ClCompile Include="src\data.cpp" /><ClCompile Include="src\console.cpp" /><ClCompile Include="src\score.cpp" /><ClCompile Include="src\shooter.cpp" /><ClCompile Include="src\match.cpp" />
   </ItemGroup>
   <ItemGroup><ClInclude Include="src\game.h" /><ClInclude Include="src\console.h" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

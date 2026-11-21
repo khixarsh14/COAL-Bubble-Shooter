@@ -1,13 +1,8 @@
 # Testing record
 
-## Playable integration verification
+## Single-round verification
 
-The current test commands are in the README. Verified on VS 2026 MSVC x86 using the batch scripts:
-
-- Assembly proof and game build passed.
-- GameTests passed 29 checks covering motion, corner crossings, landing, scores, drops, levels, game states, and decimal conversion.
-- MatchTests passed 25 checks and GridTests passed 31 checks.
-- The live console smoke test passed six checks covering menu, help, drawing, shot erasure, pause/resume, and clean exit.
+Verified with VS 2026 MSVC x86 and the batch scripts. The assembly proof passed. GameTests passed 39 checks, MatchTests passed 25, GridTests passed 13, and the live console smoke test passed 7. The gameplay tests confirm victory leaves the board empty, a new round starts with five filled rows, pops reset the countdown, and the seventh consecutive miss shifts once. Both direct danger-line placement and danger caused by a ceiling shift still end the game.
 
 The material below records earlier milestones. The current source ratio is generated in RATIO.md.
 
@@ -282,12 +277,12 @@ static foundation. No gameplay has been implemented or tested.
 | Correct empty-cell and ceiling snapping | Pending | Deferred |
 | 3+ matching connected bubbles pop; 2 do not | Pending | Deferred |
 | Disconnected bubbles fall and score extra | Pending | Deferred |
-| Score, level, high score display and update | Pending | Deferred |
+| Score and high score display and update | Covered | Gameplay and live console tests |
 | Next/current bubble preview handling | Pending | Deferred |
 | DROP IN, row shift, new row, reset after pop | Pending | Deferred |
 | Danger row ends game; final score appears | Pending | Deferred |
 | Pause/resume, ESC menu, clean restart | Pending | Deferred |
-| Empty grid advances level with more rows | Pending | Deferred |
+| Empty grid ends in victory | Covered | Gameplay test verifies an empty board until restart |
 | No flicker during play or long-play crash | Pending | Deferred |
 | Ratio at least 72% | Not met | Match milestone production: 50.38%; final target pending |
 | Assembly commented; required docs exist | Local pass; user pending | Three proof instructions documented |

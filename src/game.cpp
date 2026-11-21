@@ -16,7 +16,6 @@ void __cdecl Game_Reset()
         mov shotDX, eax
         mov shotDY, eax
         mov aimIndex, NUM_ANGLES / 2
-        mov level, 1
         mov lastCol, -1
         mov lastRow, -1
         push NUM_COLORS
@@ -57,7 +56,9 @@ void __cdecl Game_Update()
         cmp eax, STATE_HELP
         je update_help
         cmp eax, STATE_GAMEOVER
-        je update_gameover
+        je update_finished
+        cmp eax, STATE_WIN
+        je update_finished
         jmp update_done
 
     update_menu:
@@ -76,7 +77,7 @@ void __cdecl Game_Update()
         test esi, KEY_ESC
         jnz update_to_menu
         jmp update_done
-    update_gameover:
+    update_finished:
         test ebx, KEY_ANY             // Console reports a fresh keydown pulse.
         jnz update_to_menu
         jmp update_done
@@ -133,19 +134,24 @@ void __cdecl Game_Update()
         call Grid_CheckDanger
         test eax, eax
         jnz update_lost
-        call Score_UpdateLevel
-        jmp update_done
+        call Grid_IsEmpty
+        test eax, eax
+        jz update_done
+        mov edx, STATE_WIN
+        jmp update_result
 
     update_open_pause:
         mov gameState, STATE_PAUSED
         jmp update_done
     update_lost:
+        mov edx, STATE_GAMEOVER
+    update_result:
         mov eax, score
         cmp eax, highScore
-        jle update_show_loss
+        jle update_show_result
         mov highScore, eax
-    update_show_loss:
-        mov gameState, STATE_GAMEOVER
+    update_show_result:
+        mov gameState, edx
         jmp update_done
     update_to_menu:
         mov shotActive, 0

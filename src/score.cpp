@@ -1,4 +1,4 @@
-// Concepts: integer scoring, level and drop thresholds, decimal division.
+// Concepts: integer scoring, a fixed ceiling-drop interval, decimal division.
 #include "game.h"
 
 void __cdecl Score_AddPop(int count)
@@ -38,33 +38,8 @@ void __cdecl Score_UpdateDrop(int popped)
         call Grid_ShiftDown
         call Grid_AddTopRow
     drop_reset:
-        mov eax, 8
-        sub eax, level
-        cmp eax, 3
-        jge drop_store
-        mov eax, 3
-    drop_store:
-        mov shotsUntilDrop, eax
+        mov shotsUntilDrop, DROP_INTERVAL
     drop_done:
-    }
-}
-
-void __cdecl Score_UpdateLevel()
-{
-    // An empty grid advances one level and refreshes the interval without a shift.
-    __asm {
-        call Grid_IsEmpty
-        test eax, eax
-        jz level_done
-        cmp level, 7FFFFFFFh
-        je level_refill
-        inc level
-    level_refill:
-        call Grid_Init
-        push 1
-        call Score_UpdateDrop
-        add esp, 4
-    level_done:
     }
 }
 

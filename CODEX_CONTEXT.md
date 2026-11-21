@@ -11,7 +11,7 @@ A **console-based Bubble Shooter game for Windows**, written for the **EL-2003 C
 
 - The player controls a launcher at the bottom of the screen, aims with the arrow keys, and shoots colored bubbles at a grid of bubbles above.
 - When 3 or more bubbles of the same color touch, they pop. Bubbles left hanging (not connected to the top) fall and are removed.
-- The game has score, level, high score, a next-bubble preview, a ceiling that drops new rows, pause, menu, and game over.
+- The game has score, high score, a next-bubble preview, a ceiling that drops new rows, pause, menu, and game over.
 
 **Team:** Usman Khan (25K-0965, group leader), Abdullah bin Faheem (25K-0603), Khizar Sheikh (25K-0641).
 **Lab instructor:** Mr. Abdullah Shaikh.
@@ -94,7 +94,7 @@ Write these explanations for a CS student who has just finished the assembly lab
  BUBBLE SHOOTER     x86 Assembly (inline __asm + C++)
 +--------------------------------+
 | O O O O O O O O O O O O O O O O |      SCORE : 0450
-| O O O O O O O O O O O O O O O O |      LEVEL : 2
+| O O O O O O O O O O O O O O O O |
 | O O O O O O O O O O O O O O O O |      HIGH  : 1200
 | O O O O O O O O O O O O O O O O |
 | O O   O O O     O O   O O       |      NEXT    : O
@@ -131,7 +131,7 @@ Write these explanations for a CS student who has just finished the assembly lab
 | P | Pause / resume |
 | ESC | Go back to the main menu |
 | Menu keys `1` / `2` / `3` | Start game / How to play / Exit |
-| Any key on game-over screen | Return to menu |
+| Any key on a result screen | Return to menu |
 
 ### 5.4 Core rules
 
@@ -142,8 +142,8 @@ Write these explanations for a CS student who has just finished the assembly lab
 5. **Match check:** flood-fill from the snapped cell over same-colored neighbours. If the group has **3 or more**, remove it.
 6. **Floating check:** after any pop, every remaining bubble that is **not connected to row 0** (through any colors) falls and is removed.
 7. **Score:** 10 points per popped bubble, 20 per floating bubble dropped.
-8. **Level:** when the grid becomes empty, go to the next level. A new level starts with `4 + level` filled rows (maximum 8 rows) of random colors.
-9. **Ceiling drop:** every `N` shots with no pop, all rows shift down by one and a new random top row is added. `N = 8 - level`, minimum 3. The side panel shows "DROP IN: n shots". A shot that pops bubbles resets the counter.
+8. **Victory:** a new round starts with five filled rows. Clearing the grid after a shot ends the round with YOU WIN. The result screen shows the score and returns to the menu on a fresh keypress.
+9. **Ceiling drop:** after seven consecutive shots with no pop, all rows shift down by one and a new random top row is added. The side panel shows "DROP IN: n shots". A shot that pops bubbles resets the counter.
 10. **Game over:** a bubble reaches the danger row, or the ceiling drop pushes bubbles there. Show a GAME OVER message with the final score, update the high score, and return to the menu on a key press.
 11. **High score** is kept for the session in memory. Saving it to a file is an **optional extra** (section 9).
 
@@ -153,7 +153,7 @@ Write these explanations for a CS student who has just finished the assembly lab
 
 The design is "assembly drives, C++ serves":
 
-- **Assembly (inline `__asm`) = the brain.** The game loop's update logic (state machine), input interpretation, aiming, shot movement, collision, snapping, grid operations, flood-fill, floating-bubble removal, scoring, level logic, number-to-text conversion, game-over checks.
+- **Assembly (inline `__asm`) = the brain.** The game loop's update logic (state machine), input interpretation, aiming, shot movement, collision, snapping, grid operations, flood-fill, floating-bubble removal, scoring, number-to-text conversion, and win/loss checks.
 - **C++ = the hands and eyes.** Start-up, reading raw key states, drawing characters at positions in colors, sleeping between frames, beeping, random numbers, and holding the global data arrays.
 
 Assembly calls the C++ service functions using the normal C calling convention (`cdecl`: push arguments right to left, `call`, then `add esp, n`; the result comes back in `EAX`).
@@ -182,7 +182,7 @@ BubbleShooter/
     shooter.cpp              aim, fire, shot movement, wall bounce, snapping              (ASM)
     grid.cpp                 grid init, get/set, shift down, add row, danger check        (ASM)
     match.cpp                flood-fill, pop, floating-bubble removal                     (ASM)
-    score.cpp                score, level, drop counter, number-to-string                 (ASM)
+    score.cpp                score, drop counter, number-to-string                 (ASM)
 ```
 
 Put a header comment at the top of each source file with the **owner** and the **concepts it uses**.
@@ -195,7 +195,7 @@ The code should be organized so each member owns a clear part, and each member o
 | --- | --- |
 | **Usman Khan** (leader) | `game.cpp` (state machine, main update, input to aim, menu/pause/game-over states), `shooter.cpp` (aim table use, fire, movement, wall bounce, snapping, next-bubble handling), `main.cpp` (frame loop), final integration |
 | **Khizar Sheikh** | `grid.cpp` (init with random bubbles, get/set, shift rows down with string instructions, add top row, danger-row check, empty-grid check), `match.cpp` (recursive flood-fill, pop group, floating-bubble removal) |
-| **Abdullah bin Faheem** | `console.cpp/.h` (the whole C++ wrapper: drawing, colors, key reading, timing, sound, random), `score.cpp` (score, level, drop counter, number-to-string using `DIV`), HUD drawing calls, testing docs |
+| **Abdullah bin Faheem** | `console.cpp/.h` (the whole C++ wrapper: drawing, colors, key reading, timing, sound, random), `score.cpp` (score, drop counter, number-to-string using `DIV`), HUD drawing calls, testing docs |
 
 Mark the owner at the top of each file so the viva questions line up with the code.
 
@@ -212,7 +212,7 @@ MIN_MATCH = 3    POINTS_POP = 10  POINTS_DROP = 20
 SUBPIX = 256     (fixed-point: 256 units = 1 grid cell)
 ```
 
-States: `STATE_MENU = 0, STATE_PLAYING = 1, STATE_PAUSED = 2, STATE_GAMEOVER = 3, STATE_HELP = 4, STATE_EXIT = 5`.
+States: `STATE_MENU = 0, STATE_PLAYING = 1, STATE_PAUSED = 2, STATE_GAMEOVER = 3, STATE_HELP = 4, STATE_EXIT = 5, STATE_WIN = 6`.
 
 ### 7.2 Global data (in `data.cpp`, C++ — inline asm cannot declare data)
 
@@ -226,7 +226,7 @@ int  shotActive;               // 0/1: is a bubble flying
 int  shotX, shotY;             // fixed-point position (256 = 1 cell)
 int  shotDX, shotDY;           // fixed-point velocity per step
 int  lastCol, lastRow;         // last empty cell the shot passed through
-int  score, level, highScore;
+int  score, highScore;
 int  shotsUntilDrop;
 int  gameState;
 int  keyBits;                  // bit mask from the keyboard reader
@@ -324,7 +324,7 @@ while (gameState != STATE_EXIT) {
 Con_Shutdown();
 ```
 
-`Game_Update()` (asm): `CMP gameState` against each state constant and jump to the handler for menu / help / playing / paused / game-over. The playing handler does: read keys to change the aim; if Space and no shot active, fire; if a shot is active, run the movement sub-steps; redraw what changed.
+`Game_Update()` (asm): `CMP gameState` against each state constant and jump to the handler for menu / help / playing / paused / game-over / win. The playing handler does: read keys to change the aim; if Space and no shot active, fire; if a shot is active, run the movement sub-steps; redraw what changed.
 
 ### 7.10 Drawing without flicker (C++ side)
 
@@ -379,10 +379,10 @@ void Con_ShowScreen(int which);               // menu / help / game-over text sc
 3. Aim with arrow keys, launcher and aim marker drawn
 4. Fire, shot movement, wall bounce, snapping
 5. Flood-fill match and pop, floating-bubble drop
-6. Score, level, high score, HUD with number-to-text
+6. Score, high score, and HUD with number-to-text
 7. Next-bubble preview, ceiling drop with "DROP IN" counter
 8. Game over, pause, menu, help screen, restart
-9. Level progression when the grid is cleared
+9. Victory screen when the grid is cleared
 
 **Optional extras (only after everything above works and is tested):**
 
@@ -451,12 +451,12 @@ Run it after every major step. If assembly drops below **72%**, move more logic 
 - [ ] The bubble snaps into the correct empty cell, including at the ceiling
 - [ ] 3+ same-colored connected bubbles pop; 2 do not
 - [ ] Bubbles disconnected from the top fall and score extra
-- [ ] Score, level and high score update correctly and display as numbers
+- [ ] Score and high score update correctly and display as numbers
 - [ ] Next bubble preview is correct, and the current bubble takes its color after a shot
 - [ ] "DROP IN" counts down, the ceiling shifts down, a new top row appears, and the counter resets after a pop
 - [ ] A bubble reaching the danger row ends the game; the game-over screen shows the final score
 - [ ] P pauses and resumes; ESC returns to the menu; a new game after game-over works with a clean state
-- [ ] Clearing the grid moves to the next level with more rows
+- [ ] Clearing the grid shows YOU WIN and leaves the board empty until restart
 - [ ] No flicker during normal play; no crash after long play
 - [ ] `docs/RATIO.md` shows **≥ 72% assembly**
 - [ ] Every `__asm` block is commented; all docs in section 12 exist

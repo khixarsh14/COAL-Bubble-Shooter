@@ -19,31 +19,23 @@ static void Check(int condition, const char* description)
 
 static void TestInit()
 {
-    const int levels[] = {1, 2, 3, 4, 5, 100, INT_MAX, 0, -1, INT_MIN};
-    const int filledRows[] = {5, 6, 7, 8, 8, 8, 8, 5, 5, 5};
-    BYTE repeat[COLS * ROWS];
-    for (int test = 0; test < 10; ++test) {
-        level = levels[test];
-        memset(grid, 255, sizeof(grid));
-        memset(visited, 123, sizeof(visited));
-        srand(1234);
-        Grid_Init();
-        int valid = 1;
-        for (int i = 0; i < COLS * ROWS; ++i) {
-            if (i < filledRows[test] * COLS) {
-                if (grid[i] < 1 || grid[i] > NUM_COLORS) valid = 0;
-            } else if (grid[i] != EMPTY) valid = 0;
-            if (visited[i] != 123) valid = 0;
-        }
-        char label[100];
-        sprintf_s(label, "Init level %d: %d colored rows, rest empty, visited unchanged", level, filledRows[test]);
-        Check(valid && level == levels[test], label);
-        memcpy(repeat, grid, sizeof(grid));
-        srand(1234);
-        Grid_Init();
-        Check(memcmp(repeat, grid, sizeof(grid)) == 0, "Init repeatable with same CRT seed");
+    BYTE first[COLS * ROWS];
+    memset(grid, 255, sizeof(grid));
+    memset(visited, 123, sizeof(visited));
+    srand(1234);
+    Grid_Init();
+    bool valid = STARTING_ROWS == 5;
+    for (int i = 0; i < COLS * ROWS; ++i) {
+        if (i < STARTING_ROWS * COLS) {
+            if (grid[i] < 1 || grid[i] > NUM_COLORS) valid = false;
+        } else if (grid[i] != EMPTY) valid = false;
+        if (visited[i] != 123) valid = false;
     }
-    level = 1;
+    Check(valid, "Init fills five rows and clears the rest without touching visited");
+    memcpy(first, grid, sizeof(grid));
+    srand(1234);
+    Grid_Init();
+    Check(memcmp(first, grid, sizeof(grid)) == 0, "Init repeatable with same CRT seed");
 }
 
 static void TestGetSet()

@@ -4,7 +4,8 @@
 #include <string.h>
 
 // Platform calls are described in docs/OUT_OF_OUTLINE.md, Live console events and incremental drawing.
-enum { GRID_X = 1, GRID_Y = 2, FRAME_BOTTOM = ROWS + 4, CELLS = COLS * ROWS };
+enum { GRID_X = 1, GRID_Y = 2, FRAME_BOTTOM = ROWS + 4, CELLS = COLS * ROWS,
+    BOARD_WIDTH = COLS * 2, BOARD_HEIGHT = ROWS + 1 };
 static HANDLE outputHandle, inputHandle;
 static CONSOLE_SCREEN_BUFFER_INFO savedInfo;
 static CONSOLE_CURSOR_INFO savedCursor;
@@ -12,9 +13,12 @@ static DWORD savedInputMode;
 static char savedTitle[1024];
 static int consoleReady;
 static BYTE down[256];
-static BYTE displayed[CELLS];
-static int shownState = -1, shownAim, shownLauncher, shownLane, shownLaneColor;
-static int shownScore, shownLevel, shownHigh, shownDrop, shownNext;
+static BYTE guide[CELLS], guideGrid[CELLS];
+static CHAR_INFO boardPixels[BOARD_HEIGHT][BOARD_WIDTH];
+static_assert(sizeof(CHAR_INFO) == 4, "Board compositor packs each CHAR_INFO into a DWORD.");
+static int guideAim = -1;
+static int shownState = -1, shownLauncher;
+static int shownScore, shownHigh, shownDrop, shownNext;
 static const WORD palette[] = {7, 12, 10, 11, 14, 13};
 
 int __cdecl Con_Init()
@@ -81,7 +85,7 @@ struct TextLine { int x, y; const char* text; int color; };
 static const char border[] = "+--------------------------------+", vertical[] = "|";
 static const TextLine frame[] = {
     {1, 0, "BUBBLE SHOOTER", 15}, {0, 1, border, 7}, {0, FRAME_BOTTOM, border, 7},
-    {39, 2, "SCORE", 7}, {39, 3, "LEVEL", 7}, {39, 4, "HIGH", 7},
+    {39, 2, "SCORE", 7}, {39, 3, "HIGH", 7},
     {39, 6, "NEXT", 7}, {39, 7, "DROP IN", 7},
     {39, 9, "Left / Right  Aim", 7}, {39, 10, "Space         Shoot", 7},
     {39, 11, "P             Pause", 7}, {39, 12, "Esc           Menu", 7},
@@ -335,14 +339,14 @@ static const TextLine helpLines[] = {
     {2, 5, "Clear the board before bubbles reach the danger line.", 7},
     {2, 7, "P pauses. Esc returns to the menu.", 7}
 };
-static const TextLine lossLines[] = {
-    {2, 3, "GAME OVER", 12}, {2, 5, "FINAL SCORE", 7},
+static const TextLine resultLines[] = {
+    {2, 5, "FINAL SCORE", 7},
     {2, 7, "Press any key for the menu.", 7}
 };
-static const char title[] = "BUBBLE SHOOTER";
+static const char title[] = "BUBBLE SHOOTER", lossTitle[] = "GAME OVER", winTitle[] = "YOU WIN";
 enum { MENU_LINES = sizeof(menuLines) / sizeof(menuLines[0]),
     HELP_LINES = sizeof(helpLines) / sizeof(helpLines[0]),
-    LOSS_LINES = sizeof(lossLines) / sizeof(lossLines[0]) };
+    RESULT_LINES = sizeof(resultLines) / sizeof(resultLines[0]) };
 
 void __cdecl Con_ShowScreen(int which)
 {
@@ -362,10 +366,32 @@ void __cdecl Con_ShowScreen(int which)
         cmp eax, STATE_HELP
         je screen_help
         cmp eax, STATE_GAMEOVER
+        je screen_loss
+        cmp eax, STATE_WIN
         jne screen_done
-        push LOSS_LINES
-        lea eax, lossLines
-        jmp screen_lines
+        lea eax, winTitle
+        push 10
+        jmp screen_result
+    screen_loss:
+        lea eax, lossTitle
+        push 12
+    screen_result:
+        push eax
+        push 3
+        push 2
+        call Con_DrawText
+        add esp, 16
+        push RESULT_LINES
+        lea eax, resultLines
+        push eax
+        call DrawLines
+        add esp, 8
+        push score
+        push 5
+        push 15
+        call DrawNumber
+        add esp, 12
+        jmp screen_done
     screen_menu:
         push MENU_LINES
         lea eax, menuLines
@@ -377,144 +403,191 @@ void __cdecl Con_ShowScreen(int which)
         push eax
         call DrawLines
         add esp, 8
-        cmp which, STATE_GAMEOVER
-        jne screen_done
-        push score
-        push 5
-        push 15
-        call DrawNumber
-        add esp, 12
     screen_done:
     }
 }
 
-static void __cdecl DrawBoard()
+static void __cdecl RefreshGuide()
 {
-    int overlayCol, overlayRow;
-    // Compose the shot over the grid, then draw only cells with changed colors.
+    // Cache the prediction by aim and the exact board used to compute it.
     __asm {
-        mov overlayCol, -1
-        mov overlayRow, -1
-        cmp shotActive, 0
-        je board_start
-        mov eax, shotX
-        sar eax, 8
-        mov overlayCol, eax
-        mov eax, shotY
-        sar eax, 8
-        mov overlayRow, eax
-    board_start:
-        xor ebx, ebx                 // Linear index covers each cell exactly once.
-    board_cell:
-        mov esi, ebx
-        and esi, COLS - 1
-        mov edi, ebx
-        shr edi, 4
-        movzx eax, byte ptr grid[ebx]
-        cmp esi, overlayCol
-        jne board_compare
-        cmp edi, overlayRow
-        jne board_compare
-        mov eax, curColor
-    board_compare:
-        cmp byte ptr displayed[ebx], al
-        je board_next
-        mov byte ptr displayed[ebx], al
+        mov eax, aimIndex
+        cmp eax, guideAim
+        jne guide_refresh
+        lea esi, grid
+        lea edi, guideGrid
+        mov ecx, CELLS
+        cld
+        repe cmpsb
+        je guide_current
+    guide_refresh:
+        mov guideAim, eax
+        lea esi, grid
+        lea edi, guideGrid
+        mov ecx, CELLS
+        cld
+        rep movsb
+        lea edx, guide
+        push edx
         push eax
-        push edi
-        push esi
-        cmp esi, overlayCol
-        jne board_draw_cell
-        cmp edi, overlayRow
-        jne board_draw_cell
-        call Con_DrawShot
-        jmp board_draw_done
-    board_draw_cell:
-        call Con_DrawBubble
-    board_draw_done:
-        add esp, 12
-    board_next:
-        inc ebx
-        cmp ebx, CELLS
-        jb board_cell
+        call Shooter_Predict
+        add esp, 8
+    guide_current:
     }
 }
 
-static void __cdecl DrawLauncherArea()
+static void __cdecl PresentBoard(int left, int top, int right, int bottom)
 {
-    // Redraw the aim and the flying bubble in the lane as a single layer.
+    const COORD size = {BOARD_WIDTH, BOARD_HEIGHT};
+    const COORD start = {(SHORT)left, (SHORT)top};
+    SMALL_RECT rect = {(SHORT)(GRID_X + left), (SHORT)(GRID_Y + top),
+        (SHORT)(GRID_X + right), (SHORT)(GRID_Y + bottom)};
+    if (!WriteConsoleOutputA(outputHandle, &boardPixels[0][0], size, start, &rect))
+        memset(boardPixels, 0, sizeof(boardPixels));
+}
+
+static void __cdecl DrawBoard()
+{
+    int shotCell, shotHalf, left, top, right, bottom;
+    // Compose both character slots per cell, then present the dirty rectangle
+    // in one Win32 call. A CHAR_INFO holds a glyph and its attribute together.
     __asm {
-        mov ebx, -1                  // Current shot column in the lane, or absent.
-        xor edi, edi                 // Current lane color.
+        mov shotCell, -1
         cmp shotActive, 0
-        je lane_compare
+        je board_guide
         mov eax, shotY
         sar eax, 8
         cmp eax, LAUNCH_ROW
-        jne lane_compare
-        mov ebx, shotX
-        sar ebx, 8
-        mov edi, curColor
-    lane_compare:
-        mov esi, aimIndex
-        cmp shownAim, esi
-        jne lane_redraw
-        cmp shownLane, ebx
-        jne lane_redraw
-        cmp shownLaneColor, edi
-        je lane_launcher
-    lane_redraw:
-        mov eax, shownAim
-        cmp eax, 0
-        jl lane_erase_shot
-        add eax, LAUNCH_COL - NUM_ANGLES / 2
-        push 0
-        push LAUNCH_ROW
-        push eax
-        call Con_DrawBubble
-        add esp, 12
-    lane_erase_shot:
-        cmp shownLane, 0
-        jl lane_draw_aim
-        push 0
-        push LAUNCH_ROW
-        push shownLane
-        call Con_DrawShot
-        add esp, 12
-    lane_draw_aim:
-        mov shownAim, esi
-        mov shownLane, ebx
-        mov shownLaneColor, edi
-        lea eax, [esi + LAUNCH_COL - NUM_ANGLES / 2]
-        cmp eax, ebx
-        je lane_draw_shot
-        push esi
-        call Con_DrawAim
-        add esp, 4
-    lane_draw_shot:
-        cmp ebx, 0
-        jl lane_launcher
-        push edi
-        push LAUNCH_ROW
-        push ebx
-        call Con_DrawShot
-        add esp, 12
-    lane_launcher:
+        ja board_start
+        shl eax, 4
+        mov edx, shotX
+        mov ecx, edx
+        shr edx, 8
+        add eax, edx
+        mov shotCell, eax
+        and ecx, SUBPIX / 2
+        mov shotHalf, ecx
+        jmp board_start
+    board_guide:
+        call RefreshGuide
+    board_start:
+        mov left, BOARD_WIDTH
+        mov top, BOARD_HEIGHT
+        mov right, -1
+        xor ebx, ebx
+        lea edi, boardPixels
+    board_cell:
+        mov eax, (7 SHL 16) + ' '
+        mov edx, eax
+        mov esi, ebx
+        shr esi, 4
+        cmp esi, LAUNCH_ROW
+        je board_lane
+        movzx ecx, byte ptr grid[ebx]
+        test ecx, ecx
+        jnz board_bubble
+        cmp esi, DANGER_ROW
+        jne board_guide_cell
+        mov al, '-'
+    board_guide_cell:
+        cmp shotActive, 0
+        jne board_overlay
+        mov cl, byte ptr guide[ebx]
+        cmp cl, GUIDE_LANDING
+        je board_target
+        cmp cl, GUIDE_DOT
+        jne board_overlay
+        mov ecx, (8 SHL 16) + '.'
+        jmp board_mark
+    board_target:
+        mov ecx, (15 SHL 16) + '+'
+    board_mark:
+        // Leave the danger dash in the first slot when marking its cell.
+        cmp esi, DANGER_ROW
+        je board_mark_right
+        mov eax, ecx
+        jmp board_overlay
+    board_mark_right:
+        mov edx, ecx
+        jmp board_overlay
+    board_bubble:
+        movzx eax, word ptr palette[ecx * 2]
+        shl eax, 16
+        mov edx, eax
+        mov al, 'O'
+        mov dl, ' '
+        jmp board_overlay
+    board_lane:
+        cmp ebx, CELLS + LAUNCH_COL
+        jne board_overlay
+        mov al, '^'
+    board_overlay:
+        cmp ebx, shotCell
+        jne board_compare
+        mov ecx, curColor
+        movzx ecx, word ptr palette[ecx * 2]
+        shl ecx, 16
+        mov cl, 'O'
+        cmp shotHalf, 0
+        jne board_shot_right
+        mov eax, ecx
+        jmp board_compare
+    board_shot_right:
+        mov edx, ecx
+    board_compare:
+        cmp [edi], eax
+        jne board_changed
+        cmp [edi + 4], edx
+        je board_next
+    board_changed:
+        mov [edi], eax
+        mov [edi + 4], edx
+        mov ecx, ebx
+        and ecx, COLS - 1
+        shl ecx, 1
+        cmp ecx, left
+        jge board_right
+        mov left, ecx
+    board_right:
+        inc ecx
+        cmp ecx, right
+        jle board_rows
+        mov right, ecx
+    board_rows:
+        cmp top, BOARD_HEIGHT
+        jne board_last_row
+        mov top, esi
+    board_last_row:
+        mov bottom, esi
+    board_next:
+        add edi, 8
+        inc ebx
+        cmp ebx, COLS * BOARD_HEIGHT
+        jb board_cell
+        cmp right, 0
+        jl board_launcher
+        push bottom
+        push right
+        push top
+        push left
+        call PresentBoard
+        add esp, 16
+    board_launcher:
         mov eax, curColor
         cmp eax, shownLauncher
-        je lane_done
+        je board_done
         mov shownLauncher, eax
         push eax
         call Con_DrawLauncher
         add esp, 4
-    lane_done:
+    board_done:
     }
 }
 
 struct HudNumber { int* value; int* previous; int row; };
 static const HudNumber hud[] = {
-    { &score, &shownScore, 2 }, { &level, &shownLevel, 3 },
-    { &highScore, &shownHigh, 4 }, { &shotsUntilDrop, &shownDrop, 7 }
+    { &score, &shownScore, 2 }, { &highScore, &shownHigh, 3 },
+    { &shotsUntilDrop, &shownDrop, 7 }
 };
 static const char nextGlyph[] = "O";
 enum { HUD_COUNT = sizeof(hud) / sizeof(hud[0]), HUD_STRIDE = sizeof(hud[0]) };
@@ -581,18 +654,15 @@ void __cdecl Con_Render()
         je render_pause_label
         call ClearScreen
         call Con_DrawFrame
-        lea edi, displayed
-        mov eax, -1
-        mov ecx, CELLS
+        lea edi, boardPixels
+        xor eax, eax
+        mov ecx, BOARD_WIDTH * BOARD_HEIGHT
         cld
-        rep stosb
-        mov shownAim, eax
+        rep stosd
+        mov eax, -1
         mov shownLauncher, eax
-        mov shownLane, eax
-        mov shownLaneColor, eax
         mov shownScore, eax
         mov shownHigh, eax
-        mov shownLevel, eax
         mov shownDrop, eax
         mov shownNext, eax
     render_pause_label:
@@ -616,7 +686,6 @@ void __cdecl Con_Render()
         jne render_done
     render_game:
         call DrawBoard
-        call DrawLauncherArea
         call DrawHud
     render_done:
     }

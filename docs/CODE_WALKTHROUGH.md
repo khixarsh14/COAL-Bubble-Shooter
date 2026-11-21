@@ -3,8 +3,8 @@
 ## Playable integration
 
 - **Shooter.** `Shooter_Aim(step)` clamps the angle index. `Shooter_Fire()` captures indexed velocities and initializes position and the last-empty sentinel. `Shooter_Update()` holds the step count in EBX and the candidate column and row in ESI/EDI across cdecl calls. It reflects X, visits crossed cells, places once, resolves once, and promotes the color queue. If the whole path to the first obstacle was blocked, `lastRow = -1` signals a failed placement.
-- **Game.** `Game_Reset()` initializes a round and preserves the session record. `Game_Update()` derives key edges, dispatches states, and processes each landing once. During a shot step EDI holds the prior score. A change indicates a pop even after the floating search reuses `popCount`.
-- **Score.** `Score_UpdateDrop(popped)` owns the miss countdown and calls both grid drop operations if the count expires. `Score_UpdateLevel()` advances an empty board, refills it, and resets the interval. `Score_AddPop(count)` and `Score_AddDrop(count)` are standalone helpers. The active game gets both awards from `Match_Resolve` and its floating pass. `Num_ToString(value, bufferAddress)` uses unsigned magnitude division with EDX:EAX, stacks the digits, then writes them back in reverse order.
+- **Game.** `Game_Reset()` initializes a round and preserves the session record. `Game_Update()` derives key edges, dispatches states, and processes each landing once. A surviving danger cell ends the round in defeat, and an empty board ends it in victory. Both results update the session high score. During a shot step EDI holds the prior score. A change indicates a pop even after the floating search reuses `popCount`.
+- **Score.** `Score_UpdateDrop(popped)` owns the seven-miss countdown and calls both grid drop operations if the count expires. A pop resets the count. `Score_AddPop(count)` and `Score_AddDrop(count)` are standalone helpers. The active game gets both awards from `Match_Resolve` and its floating pass. `Num_ToString(value, bufferAddress)` uses unsigned magnitude division with EDX:EAX, stacks the digits, then writes them back in reverse order.
 - **Console.** `Con_ReadKeys()` consumes Win32 events, tracks held keys, and emits a fresh-event pulse for game over. `Con_Render()` switches screens and invalidates its render cache when a round starts. It composes the flying shot over the grid and redraws cells when their visible color changes. Its launcher-lane pass restores the aim marker after a shot moves into the board. HUD values use fixed-width decimal fields.
 - **Main.** `main()` initializes the console, draws the menu, then polls, updates, renders, and sleeps until `STATE_EXIT`. It restores console settings on normal exit.
 
@@ -32,7 +32,7 @@ implemented below, as are Match functions; Game, Shooter, Score, and Num remain 
 | Shooter_Aim | Signed step | Change aimIndex within bounds |
 | Shooter_Fire | Current aim and color globals | Begin shot |
 | Shooter_Update | Shot globals | Advance and resolve movement |
-| Grid_Init | Level global | Fill starting grid |
+| Grid_Init | None | Fill five starting rows |
 | Grid_Get | col, row | Integer cell value |
 | Grid_Set | col, row, color | Store cell value |
 | Grid_ShiftDown | Grid global | Move rows down |
@@ -44,7 +44,6 @@ implemented below, as are Match functions; Game, Shooter, Score, and Num remain 
 | Match_DropFloating | Grid global | Remove disconnected bubbles |
 | Score_AddPop | Count | Add popped-bubble points |
 | Score_AddDrop | Count | Add floating-bubble points |
-| Score_UpdateLevel | Grid/level globals | Advance level when appropriate |
 | Score_UpdateDrop | Whether a shot popped bubbles | Update ceiling counter |
 | Num_ToString | Value, writable bufferAddress | Decimal text in caller's buffer |
 
@@ -52,7 +51,7 @@ implemented below, as are Match functions; Game, Shooter, Score, and Num remain 
 
 No functions. Defines every global listed in section 7.2 once. Grid, visited,
 shot data, score, high score, key bits, pop count, and number buffer start zero.
-Level starts at 1, aim at index 4, colors at 1, drop counter at 7, and state at
+Aim starts at index 4, colors at 1, drop counter at 7, and state at
 STATE_MENU. These are initial data, not gameplay initialization. The preview
 does not run the state machine. Direction arrays exactly reproduce section 7.4;
 positive DY means upward magnitude and is reserved for future movement.
@@ -138,11 +137,11 @@ Owner: Khizar Sheikh. Coordinates retain the shared interface's **(col, row)**
 order. Columns 0..15 and rows 0..12 are valid. TOTAL_CELLS=208 and
 SHIFT_CELLS=192 are local constants derived from COLS and ROWS; no shared header
 or data definitions were changed. Grid routines touch grid only, not visited,
-score, level, or other game state. They do not draw, score, match, or end a game.
+score or other game state. They do not draw, score, match, or end a game.
 
 | Function | Inputs / return | Explicit registers | Assembly logic |
 | --- | --- | --- | --- |
-| Grid_Init | Reads level; void | EAX/AL, EBX, ECX, EDI; ESP for call cleanup | CLD and REP STOSB clear all 208 bytes. Clamp the effective level to 1..4, add 4, then SHL by 4 to obtain 80/96/112/128 filled cells. Loop through those cells, call Con_Rand(5), add 1, and store the color. Valid levels follow min(4+level,8); nonpositive levels defensively use level-1 row count without changing level. Clamping before adding avoids overflow for INT_MAX. |
+| Grid_Init | None; void | EAX/AL, EBX, ECX, EDI; ESP for call cleanup | CLD and REP STOSB clear all 208 bytes. Fill 80 cells by calling Con_Rand(5), adding 1, and storing each color. |
 | Grid_Get | col,row; int color or EMPTY for invalid coordinates | EAX, ECX, EDX | Signed CMP/JL/JGE reject negative and too-large values before indexing. SHL row by 4 and ADD col produce row*16+col. LEA gets the grid address; MOVZX expands the BYTE to an unsigned integer. Invalid path returns 0. |
 | Grid_Set | col,row,color; void | EAX, ECX/CL, EDX, ESI | Check coordinates and the full signed color range 0..5 before truncating anything. Calculate the same row-major index and store CL. Invalid calls do nothing; color 0 erases. |
 | Grid_ShiftDown | Grid; void | EAX/AL, ECX, ESI, EDI; direction flag | Set ESI to index 191, EDI to 207, ECX to 192. STD makes REP MOVSB copy backward, so the overlapping destination never destroys unread source bytes. CLD immediately follows REP MOVSB. Clear the 16-byte top row with REP STOSB. Old row 12 is discarded; AddTopRow and danger checks are separate calls. |
@@ -184,7 +183,7 @@ In tests/grid_tests.cpp:
 | Function | Inputs / output | Purpose |
 | --- | --- | --- |
 | Check | Condition, description; void | Count each test result, print PASS/FAIL, accumulate failures. |
-| TestInit | None; void | Test levels 1,2,3,4,5,100,INT_MAX,0,-1,INT_MIN. Validate every initialized/empty byte, visited preservation, unchanged level, and repeatability after resetting the CRT seed. |
+| TestInit | None; void | Validate five filled rows, empty trailing rows, visited preservation, and repeatability after resetting the CRT seed. |
 | TestGetSet | None; void | Check every coordinate's stored value and unchanged neighbors, all supported colors/erase, invalid coordinates, and invalid full-width colors. |
 | TestShiftAndTop | None; void | Compare a distinct-byte snapshot with the shifted grid, check empty row 0 and filled top row, preserve lower rows, and repeat shifts until empty. |
 | TestScans | None; void | Place a single bubble at each of 208 positions to check exact empty/danger booleans, including both ends of danger rows and a nonzero invalid color byte. |
@@ -221,15 +220,14 @@ int __cdecl Grid_Get(int col, int row);
 void __cdecl Grid_Set(int col, int row, int color);
 void __cdecl Score_AddPop(int count);
 void __cdecl Score_AddDrop(int count);
-void __cdecl Score_UpdateLevel();
 void __cdecl Score_UpdateDrop(int popped);
 ```
 
 Grid and Match use **col before row**. Match returns void, never counts or points.
 The Score declarations still have no definitions in score.cpp and are not called
 here. Match updates the existing score in assembly as requested. Its shared data
-is grid, visited, popCount, and score. It does not modify level, highScore,
-shotsUntilDrop, or shot state. Grid_Init separately reads level.
+is grid, visited, popCount, and score. It does not modify highScore,
+shotsUntilDrop, or shot state.
 
 | Function | Inputs / outputs | Explicit registers and frame data | Logic |
 | --- | --- | --- | --- |
@@ -322,7 +320,7 @@ pop or floating points through Score_AddPop/Score_AddDrop a second time.
 With this void interface, compare score before/after the synchronous Resolve to
 detect a successful pop for the later ceiling counter. Do not use popCount as
 the matched count after Resolve. There are no removal-count return values.
-Continue with the planned ceiling/danger/level/HUD work in its own milestone.
+An empty board ends the round in victory. Match scoring remains in Match_Resolve.
 No shooter, score, state-machine, sound, or rendering code was added here.
 game.h changed comments only: signatures, constants, and data declarations remain
 identical. Optional beep feedback remains deferred with the sound services.
