@@ -8,24 +8,14 @@ enum { TOTAL_CELLS = COLS * ROWS, SHIFT_CELLS = COLS * (ROWS - 1) };
 
 void __cdecl Grid_Init()
 {
-    // Clear 208 bytes, then fill min(4 + level, 8) rows for valid levels (>=1).
+    // Clear all cells, then fill the fixed number of starting rows.
     __asm {
         cld                     // String writes must advance toward higher addresses.
         xor eax, eax            // AL = EMPTY for byte stores.
         lea edi, grid
         mov ecx, TOTAL_CELLS
         rep stosb               // Write AL to every grid byte.
-        mov ebx, level
-        cmp ebx, 1
-        jge grid_init_valid_level
-        mov ebx, 1              // Defensive fallback for a nonpositive level.
-    grid_init_valid_level:
-        cmp ebx, 4
-        jle grid_init_bounded_level
-        mov ebx, 4              // Cap before adding, so even INT_MAX cannot overflow.
-    grid_init_bounded_level:
-        add ebx, 4              // Levels 1,2,3,4+ start with 5,6,7,8 rows.
-        shl ebx, 4              // Multiply row count by 16 columns.
+        mov ebx, STARTING_ROWS * COLS
         lea edi, grid
     grid_init_fill:
         push NUM_COLORS         // cdecl argument: Con_Rand(5) returns 0..4 in EAX.

@@ -20,7 +20,6 @@ static void Reset()
     memset(visited, 0, sizeof(visited));
     popCount = 0;
     score = 0;
-    level = 1;
     highScore = 0;
     shotsUntilDrop = 7;
 }

@@ -88,10 +88,6 @@ foreach ($row in $rows) {
     if ($total -gt 0) { $a = 100.0 * $row.Assembly / $total; $c = 100.0 * $row.Cpp / $total }
     $report += ('| {0} | {1} | {2} | {3:F2} | {4:F2} |' -f $row.File, $row.Assembly, $row.Cpp, $a, $c)
 }
-$report += @('', 'Match milestone: real recursive flood-fill, popping, and floating removal are implemented; preview behavior is unchanged.',
-    'The combined percentage includes the two ESP-reading MOV lines in tests/match_tests.cpp as test assembly.',
-    'The final minimum is 70% assembly, targeting 72-75%; further gameplay assembly is deferred.',
-    'No pointless instructions were added to increase the percentage.')
 $parent = Split-Path -Parent $ReportPath
 if ($parent -and !(Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
 # Markdown reports use LF, matching the repository's .gitattributes policy.

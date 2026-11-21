@@ -1,5 +1,4 @@
-// Owner: Usman Khan.
-// Concepts: program entry, console service calls, and clean preview exit.
+// Concepts: console lifetime and nonblocking frame loop.
 #include "console.h"
 #include <stdio.h>
 
@@ -9,8 +8,14 @@ int main()
         fprintf(stderr, "Cannot initialize an 80x25 Windows console. Run in a console window.\n");
         return 1;
     }
-    Con_DrawFrame();
-    Con_WaitForExit();
+    Con_Render();
+    while (gameState != STATE_EXIT) {
+        Con_ReadKeys();
+        Game_Update();
+        if (gameState == STATE_EXIT) break;
+        Con_Render();
+        Con_Sleep(30);
+    }
     Con_Shutdown();
     return 0;
 }

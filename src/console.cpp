@@ -1,23 +1,33 @@
-// Owner: Abdullah bin Faheem.
-// Concepts: Win32 cursor positioning, colors, console setup, and blocking input.
+// Concepts: nonblocking Win32 input and rendering with assembly cell/HUD updates.
 #include "console.h"
-#include <conio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
-static HANDLE outputHandle = INVALID_HANDLE_VALUE;
+// Platform calls are described in docs/OUT_OF_OUTLINE.md, Live console events and incremental drawing.
+enum { GRID_X = 1, GRID_Y = 2, FRAME_BOTTOM = ROWS + 4, CELLS = COLS * ROWS,
+    BOARD_WIDTH = COLS * 2, BOARD_HEIGHT = ROWS + 1 };
+static HANDLE outputHandle, inputHandle;
 static CONSOLE_SCREEN_BUFFER_INFO savedInfo;
 static CONSOLE_CURSOR_INFO savedCursor;
+static DWORD savedInputMode;
 static char savedTitle[1024];
-static int consoleReady = 0;
+static int consoleReady;
+static BYTE down[256];
+static BYTE guide[CELLS], guideGrid[CELLS];
+static CHAR_INFO boardPixels[BOARD_HEIGHT][BOARD_WIDTH];
+static_assert(sizeof(CHAR_INFO) == 4, "Board compositor packs each CHAR_INFO into a DWORD.");
+static int guideAim = -1;
+static int shownState = -1, shownLauncher;
+static int shownScore, shownHigh, shownDrop, shownNext;
+static const WORD palette[] = {7, 12, 10, 11, 14, 13};
 
-// Win32 services: see docs/OUT_OF_OUTLINE.md, Win32 console API.
 int __cdecl Con_Init()
 {
     outputHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    inputHandle = GetStdHandle(STD_INPUT_HANDLE);
     if (!GetConsoleScreenBufferInfo(outputHandle, &savedInfo) ||
-        !GetConsoleCursorInfo(outputHandle, &savedCursor))
-        return 0;
+        !GetConsoleCursorInfo(outputHandle, &savedCursor) ||
+        !GetConsoleMode(inputHandle, &savedInputMode)) return 0;
     GetConsoleTitleA(savedTitle, sizeof(savedTitle));
     consoleReady = 1;
     COORD size = savedInfo.dwSize;
@@ -26,28 +36,28 @@ int __cdecl Con_Init()
     SMALL_RECT window = {0, 0, 79, 24};
     CONSOLE_CURSOR_INFO cursor = savedCursor;
     cursor.bVisible = FALSE;
-    DWORD written;
-    COORD home = {0, 0};
     if (!SetConsoleScreenBufferSize(outputHandle, size) ||
         !SetConsoleWindowInfo(outputHandle, TRUE, &window) ||
         !SetConsoleCursorInfo(outputHandle, &cursor) ||
-        !SetConsoleTitleA("Bubble Shooter - Milestone 1") ||
-        !FillConsoleOutputCharacterA(outputHandle, ' ', size.X * size.Y, home, &written) ||
-        !FillConsoleOutputAttribute(outputHandle, 7, size.X * size.Y, home, &written)) {
+        !SetConsoleMode(inputHandle, ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT) ||
+        !SetConsoleTitleA("Bubble Shooter")) {
         Con_Shutdown();
         return 0;
     }
+    srand(GetTickCount());           // See docs/OUT_OF_OUTLINE.md, Pseudorandom colors.
     return 1;
 }
 
 void __cdecl Con_Shutdown()
 {
     if (!consoleReady) return;
+    SetConsoleMode(inputHandle, savedInputMode);
+    SetConsoleWindowInfo(outputHandle, TRUE, &savedInfo.srWindow);
+    SetConsoleCursorPosition(outputHandle, savedInfo.dwCursorPosition);
+    SetConsoleScreenBufferSize(outputHandle, savedInfo.dwSize);
     SetConsoleTextAttribute(outputHandle, savedInfo.wAttributes);
     SetConsoleCursorInfo(outputHandle, &savedCursor);
     SetConsoleTitleA(savedTitle);
-    COORD belowFrame = {0, 22};
-    SetConsoleCursorPosition(outputHandle, belowFrame);
     consoleReady = 0;
 }
 
@@ -55,52 +65,628 @@ void __cdecl Con_DrawText(int x, int y, const char* s, int colorAttr)
 {
     COORD position = {(SHORT)x, (SHORT)y};
     DWORD written;
-    SetConsoleCursorPosition(outputHandle, position);
-    SetConsoleTextAttribute(outputHandle, (WORD)colorAttr);
-    WriteConsoleA(outputHandle, s, (DWORD)strlen(s), &written, 0);
+    DWORD length = (DWORD)strlen(s);
+    WriteConsoleOutputCharacterA(outputHandle, s, length, position, &written);
+    FillConsoleOutputAttribute(outputHandle, (WORD)colorAttr, length, position, &written);
+}
+
+static void __cdecl ClearScreen()
+{
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(outputHandle, &info)) return;
+    COORD home = {0, 0};
+    DWORD written;
+    DWORD size = info.dwSize.X * info.dwSize.Y;
+    FillConsoleOutputCharacterA(outputHandle, ' ', size, home, &written);
+    FillConsoleOutputAttribute(outputHandle, 7, size, home, &written);
+}
+
+struct TextLine { int x, y; const char* text; int color; };
+static const char border[] = "+--------------------------------+", vertical[] = "|";
+static const TextLine frame[] = {
+    {1, 0, "BUBBLE SHOOTER", 15}, {0, 1, border, 7}, {0, FRAME_BOTTOM, border, 7},
+    {39, 2, "SCORE", 7}, {39, 3, "HIGH", 7},
+    {39, 6, "NEXT", 7}, {39, 7, "DROP IN", 7},
+    {39, 9, "Left / Right  Aim", 7}, {39, 10, "Space         Shoot", 7},
+    {39, 11, "P             Pause", 7}, {39, 12, "Esc           Menu", 7},
+    {39, GRID_Y + DANGER_ROW, "< Danger line", 12}
+};
+enum { FRAME_LINES = sizeof(frame) / sizeof(frame[0]), LINE_STRIDE = sizeof(TextLine) };
+
+static void __cdecl DrawLines(const TextLine* lines, int count)
+{
+    // Shared renderer for fixed console text, using the four cdecl fields.
+    __asm {
+        mov esi, lines
+        mov ebx, count
+        test ebx, ebx
+        jz lines_done
+    lines_next:
+        push dword ptr [esi + 12]
+        push dword ptr [esi + 8]
+        push dword ptr [esi + 4]
+        push dword ptr [esi]
+        call Con_DrawText
+        add esp, 16
+        add esi, LINE_STRIDE
+        dec ebx
+        jnz lines_next
+    lines_done:
+    }
 }
 
 void __cdecl Con_DrawFrame()
 {
-    const int right = COLS * 2 + 1;
-    const int bottom = ROWS + 4;
-    Con_DrawText(1, 0, "BUBBLE SHOOTER     x86 Assembly (inline __asm + C++)", 15);
-    Con_DrawText(0, 1, "+--------------------------------+", 7);
-    for (int y = 2; y < bottom; ++y) {
-        Con_DrawText(0, y, "|", 7);
-        Con_DrawText(right, y, "|", 7);
-    }
-    Con_DrawText(0, bottom, "+--------------------------------+", 7);
-    // Row 0 starts at screen y=2: danger row 11 is screen y=13.
-    Con_DrawText(1, 2 + DANGER_ROW, "- - - - DANGER LINE - - - - - - - ", 12);
-    Con_DrawText(15, bottom - 2, "^", 7);
-    Con_DrawText(14, bottom - 1, "[O]", 7);
-    // Static placeholders, not a score calculation or a next-bubble system.
-    Con_DrawText(39, 2, "SCORE : 0000", 7);
-    Con_DrawText(39, 3, "LEVEL : 1", 7);
-    Con_DrawText(39, 4, "HIGH  : 0000", 7);
-    Con_DrawText(39, 6, "NEXT    : -", 7);
-    Con_DrawText(39, 7, "DROP IN : - shots", 7);
-    Con_DrawText(39, 9, "CONTROLS", 15);
-    Con_DrawText(39, 10, "<- / ->  aim", 7);
-    Con_DrawText(39, 11, "SPACE    shoot", 7);
-    Con_DrawText(39, 12, "P        pause", 7);
-    Con_DrawText(39, 13, "ESC      menu", 7);
-    Con_DrawText(1, bottom + 1, "Match 3 or more bubbles of the same color to pop them!", 7);
-    Con_DrawText(1, bottom + 3, "Milestone 1: static frame only. ESC exits this preview.", 14);
-}
-
-// Blocking preview input: see docs/OUT_OF_OUTLINE.md, Console key wait.
-void __cdecl Con_WaitForExit()
-{
-    while (_getch() != 27) {
-        // No aim, shooting, pause, or menu handling in this preview.
+    // Draw the static labels and both walls once per entry into the playfield.
+    __asm {
+        push FRAME_LINES
+        lea eax, frame
+        push eax
+        call DrawLines
+        add esp, 8
+        mov ebx, GRID_Y
+        lea esi, vertical
+    frame_wall:
+        push 7
+        push esi
+        push ebx
+        push 0
+        call Con_DrawText
+        add esp, 16
+        push 7
+        push esi
+        push ebx
+        push COLS * 2 + 1
+        call Con_DrawText
+        add esp, 16
+        inc ebx
+        cmp ebx, FRAME_BOTTOM
+        jl frame_wall
     }
 }
 
-// Random-number service: see docs/OUT_OF_OUTLINE.md, Pseudorandom colors.
-int __cdecl Con_Rand(int n)
+static const char bubbleGlyph[] = "O ", dangerGlyph[] = "- ", blankCell[] = "  ";
+static const char aimGlyph[] = "^ ", launcherGlyph[] = "[O]";
+
+void __cdecl Con_DrawBubble(int col, int row, int color)
 {
-    if (n <= 0) return 0;
-    return rand() % n;
+    // Grid, moving shot, and erase use the same cell-to-console mapping.
+    __asm {
+        mov ecx, color
+        cmp ecx, NUM_COLORS
+        ja cell_done
+        mov edx, row
+        cmp edx, LAUNCH_ROW
+        ja cell_done
+        mov eax, col
+        cmp eax, COLS
+        jae cell_done
+        lea eax, [eax * 2 + GRID_X]
+        movzx ecx, word ptr palette[ecx * 2]
+        lea esi, bubbleGlyph
+        cmp color, EMPTY
+        jne cell_emit
+        lea esi, blankCell
+        cmp edx, DANGER_ROW
+        jne cell_emit
+        lea esi, dangerGlyph
+    cell_emit:
+        add edx, GRID_Y
+        push ecx
+        push esi
+        push edx
+        push eax
+        call Con_DrawText
+        add esp, 16
+    cell_done:
+    }
+}
+
+void __cdecl Con_DrawShot(int cellX, int cellY, int color)
+{
+    Con_DrawBubble(cellX, cellY, color);
+}
+
+void __cdecl Con_DrawAim(int index)
+{
+    // Map the nine discrete aim indices onto the launcher lane.
+    __asm {
+        mov eax, index
+        cmp eax, NUM_ANGLES
+        jae marker_done
+        lea eax, [eax * 2 + GRID_X + (LAUNCH_COL - NUM_ANGLES / 2) * 2]
+        lea edx, aimGlyph
+        push 7
+        push edx
+        push GRID_Y + LAUNCH_ROW
+        push eax
+        call Con_DrawText
+        add esp, 16
+    marker_done:
+    }
+}
+
+void __cdecl Con_DrawLauncher(int color)
+{
+    // Translate the current color to a console attribute.
+    __asm {
+        mov eax, color
+        cmp eax, NUM_COLORS
+        ja launcher_done
+        movzx eax, word ptr palette[eax * 2]
+        lea edx, launcherGlyph
+        push eax
+        push edx
+        push GRID_Y + LAUNCH_ROW + 1
+        push GRID_X + 2 * LAUNCH_COL - 1
+        call Con_DrawText
+        add esp, 16
+    launcher_done:
+    }
+}
+
+enum { NO_EVENT = -1, SKIP_EVENT = -2, LOST_FOCUS = -3, DOWN_EVENT = 256 };
+struct KeyBinding { int virtualKey, mask; };
+static const KeyBinding bindings[] = {
+    {VK_LEFT, KEY_LEFT}, {VK_RIGHT, KEY_RIGHT}, {VK_SPACE, KEY_SPACE},
+    {'P', KEY_P}, {VK_ESCAPE, KEY_ESC}, {'1', KEY_1}, {'2', KEY_2}, {'3', KEY_3},
+    {VK_NUMPAD1, KEY_1}, {VK_NUMPAD2, KEY_2}, {VK_NUMPAD3, KEY_3}
+};
+enum { BINDING_COUNT = sizeof(bindings) / sizeof(bindings[0]), BINDING_STRIDE = sizeof(bindings[0]) };
+
+static int __cdecl ReadKeyEvent()
+{
+    DWORD pending = 0, read;
+    INPUT_RECORD event;
+    if (!GetNumberOfConsoleInputEvents(inputHandle, &pending) || !pending ||
+        !ReadConsoleInputA(inputHandle, &event, 1, &read) || !read) return NO_EVENT;
+    if (event.EventType == FOCUS_EVENT && !event.Event.FocusEvent.bSetFocus) return LOST_FOCUS;
+    if (event.EventType != KEY_EVENT || event.Event.KeyEvent.wVirtualKeyCode >= 256) return SKIP_EVENT;
+    return event.Event.KeyEvent.wVirtualKeyCode + (event.Event.KeyEvent.bKeyDown ? DOWN_EVENT : 0);
+}
+
+void __cdecl Con_ReadKeys()
+{
+    // Translate native events into held actions and one fresh-key pulse per frame.
+    __asm {
+        xor ebx, ebx
+        mov esi, 64                 // Bound queue work even when input is very busy.
+    keys_event:
+        call ReadKeyEvent
+        cmp eax, NO_EVENT
+        je keys_bindings
+        cmp eax, LOST_FOCUS
+        je keys_clear
+        cmp eax, SKIP_EVENT
+        je keys_next
+        mov ecx, eax
+        and ecx, DOWN_EVENT - 1
+        test eax, DOWN_EVENT
+        jz keys_release
+        cmp byte ptr down[ecx], 0
+        jne keys_next               // Ignore OS repeat. Arrows retain their held bits.
+        mov byte ptr down[ecx], 1
+        mov ebx, KEY_ANY
+        jmp keys_bindings           // Keep later raw transitions for the next frame.
+    keys_release:
+        cmp byte ptr down[ecx], 0
+        je keys_next
+        mov byte ptr down[ecx], 0
+        jmp keys_bindings           // Publish the release before a queued second tap.
+    keys_clear:
+        lea edi, down
+        xor eax, eax
+        mov ecx, DOWN_EVENT / 4
+        cld
+        rep stosd
+        jmp keys_bindings
+    keys_next:
+        dec esi
+        jnz keys_event
+    keys_bindings:
+        lea esi, bindings
+        mov edi, BINDING_COUNT
+    keys_binding:
+        mov ecx, [esi]
+        cmp byte ptr down[ecx], 0
+        je keys_binding_next
+        or ebx, [esi + 4]
+    keys_binding_next:
+        add esi, BINDING_STRIDE
+        dec edi
+        jnz keys_binding
+        mov keyBits, ebx
+    }
+}
+
+void __cdecl Con_Sleep(int ms) { Sleep(ms); }
+
+int __cdecl Con_Rand(int n) { return n > 0 ? rand() % n : 0; }
+
+static void __cdecl DrawNumber(int x, int y, int value)
+{
+    // Pad the decimal text to a fixed width and write it in one operation.
+    __asm {
+        lea esi, numBuf
+        push esi
+        push value
+        call Num_ToString
+        add esp, 8
+        mov edi, esi
+        xor eax, eax
+        mov ecx, 12
+        cld
+        repne scasb
+        dec edi
+        mov al, ' '
+        rep stosb
+        mov byte ptr [edi], 0
+        push 15
+        push esi
+        push y
+        push x
+        call Con_DrawText
+        add esp, 16
+    }
+}
+
+static const TextLine menuLines[] = {
+    {2, 3, "1  Start game", 7}, {2, 4, "2  How to play", 7}, {2, 5, "3  Exit", 7}
+};
+static const TextLine helpLines[] = {
+    {2, 3, "Aim with Left/Right and shoot with Space.", 7},
+    {2, 4, "Connect 3 of the same color up/down/left/right.", 7},
+    {2, 5, "Clear the board before bubbles reach the danger line.", 7},
+    {2, 7, "P pauses. Esc returns to the menu.", 7}
+};
+static const TextLine resultLines[] = {
+    {2, 5, "FINAL SCORE", 7},
+    {2, 7, "Press any key for the menu.", 7}
+};
+static const char title[] = "BUBBLE SHOOTER", lossTitle[] = "GAME OVER", winTitle[] = "YOU WIN";
+enum { MENU_LINES = sizeof(menuLines) / sizeof(menuLines[0]),
+    HELP_LINES = sizeof(helpLines) / sizeof(helpLines[0]),
+    RESULT_LINES = sizeof(resultLines) / sizeof(resultLines[0]) };
+
+void __cdecl Con_ShowScreen(int which)
+{
+    // Select the requested text layout, then append the final score if applicable.
+    __asm {
+        call ClearScreen
+        lea eax, title
+        push 15
+        push eax
+        push 0
+        push 1
+        call Con_DrawText
+        add esp, 16
+        mov eax, which
+        cmp eax, STATE_MENU
+        je screen_menu
+        cmp eax, STATE_HELP
+        je screen_help
+        cmp eax, STATE_GAMEOVER
+        je screen_loss
+        cmp eax, STATE_WIN
+        jne screen_done
+        lea eax, winTitle
+        push 10
+        jmp screen_result
+    screen_loss:
+        lea eax, lossTitle
+        push 12
+    screen_result:
+        push eax
+        push 3
+        push 2
+        call Con_DrawText
+        add esp, 16
+        push RESULT_LINES
+        lea eax, resultLines
+        push eax
+        call DrawLines
+        add esp, 8
+        push score
+        push 5
+        push 15
+        call DrawNumber
+        add esp, 12
+        jmp screen_done
+    screen_menu:
+        push MENU_LINES
+        lea eax, menuLines
+        jmp screen_lines
+    screen_help:
+        push HELP_LINES
+        lea eax, helpLines
+    screen_lines:
+        push eax
+        call DrawLines
+        add esp, 8
+    screen_done:
+    }
+}
+
+static void __cdecl RefreshGuide()
+{
+    // Cache the prediction by aim and the exact board used to compute it.
+    __asm {
+        mov eax, aimIndex
+        cmp eax, guideAim
+        jne guide_refresh
+        lea esi, grid
+        lea edi, guideGrid
+        mov ecx, CELLS
+        cld
+        repe cmpsb
+        je guide_current
+    guide_refresh:
+        mov guideAim, eax
+        lea esi, grid
+        lea edi, guideGrid
+        mov ecx, CELLS
+        cld
+        rep movsb
+        lea edx, guide
+        push edx
+        push eax
+        call Shooter_Predict
+        add esp, 8
+    guide_current:
+    }
+}
+
+static void __cdecl PresentBoard(int left, int top, int right, int bottom)
+{
+    const COORD size = {BOARD_WIDTH, BOARD_HEIGHT};
+    const COORD start = {(SHORT)left, (SHORT)top};
+    SMALL_RECT rect = {(SHORT)(GRID_X + left), (SHORT)(GRID_Y + top),
+        (SHORT)(GRID_X + right), (SHORT)(GRID_Y + bottom)};
+    if (!WriteConsoleOutputA(outputHandle, &boardPixels[0][0], size, start, &rect))
+        memset(boardPixels, 0, sizeof(boardPixels));
+}
+
+static void __cdecl DrawBoard()
+{
+    int shotCell, shotHalf, left, top, right, bottom;
+    // Compose both character slots per cell, then present the dirty rectangle
+    // in one Win32 call. A CHAR_INFO holds a glyph and its attribute together.
+    __asm {
+        mov shotCell, -1
+        cmp shotActive, 0
+        je board_guide
+        mov eax, shotY
+        sar eax, 8
+        cmp eax, LAUNCH_ROW
+        ja board_start
+        shl eax, 4
+        mov edx, shotX
+        mov ecx, edx
+        shr edx, 8
+        add eax, edx
+        mov shotCell, eax
+        and ecx, SUBPIX / 2
+        mov shotHalf, ecx
+        jmp board_start
+    board_guide:
+        call RefreshGuide
+    board_start:
+        mov left, BOARD_WIDTH
+        mov top, BOARD_HEIGHT
+        mov right, -1
+        xor ebx, ebx
+        lea edi, boardPixels
+    board_cell:
+        mov eax, (7 SHL 16) + ' '
+        mov edx, eax
+        mov esi, ebx
+        shr esi, 4
+        cmp esi, LAUNCH_ROW
+        je board_lane
+        movzx ecx, byte ptr grid[ebx]
+        test ecx, ecx
+        jnz board_bubble
+        cmp esi, DANGER_ROW
+        jne board_guide_cell
+        mov al, '-'
+    board_guide_cell:
+        cmp shotActive, 0
+        jne board_overlay
+        mov cl, byte ptr guide[ebx]
+        cmp cl, GUIDE_LANDING
+        je board_target
+        cmp cl, GUIDE_DOT
+        jne board_overlay
+        mov ecx, (8 SHL 16) + '.'
+        jmp board_mark
+    board_target:
+        mov ecx, (15 SHL 16) + '+'
+    board_mark:
+        // Leave the danger dash in the first slot when marking its cell.
+        cmp esi, DANGER_ROW
+        je board_mark_right
+        mov eax, ecx
+        jmp board_overlay
+    board_mark_right:
+        mov edx, ecx
+        jmp board_overlay
+    board_bubble:
+        movzx eax, word ptr palette[ecx * 2]
+        shl eax, 16
+        mov edx, eax
+        mov al, 'O'
+        mov dl, ' '
+        jmp board_overlay
+    board_lane:
+        cmp ebx, CELLS + LAUNCH_COL
+        jne board_overlay
+        mov al, '^'
+    board_overlay:
+        cmp ebx, shotCell
+        jne board_compare
+        mov ecx, curColor
+        movzx ecx, word ptr palette[ecx * 2]
+        shl ecx, 16
+        mov cl, 'O'
+        cmp shotHalf, 0
+        jne board_shot_right
+        mov eax, ecx
+        jmp board_compare
+    board_shot_right:
+        mov edx, ecx
+    board_compare:
+        cmp [edi], eax
+        jne board_changed
+        cmp [edi + 4], edx
+        je board_next
+    board_changed:
+        mov [edi], eax
+        mov [edi + 4], edx
+        mov ecx, ebx
+        and ecx, COLS - 1
+        shl ecx, 1
+        cmp ecx, left
+        jge board_right
+        mov left, ecx
+    board_right:
+        inc ecx
+        cmp ecx, right
+        jle board_rows
+        mov right, ecx
+    board_rows:
+        cmp top, BOARD_HEIGHT
+        jne board_last_row
+        mov top, esi
+    board_last_row:
+        mov bottom, esi
+    board_next:
+        add edi, 8
+        inc ebx
+        cmp ebx, COLS * BOARD_HEIGHT
+        jb board_cell
+        cmp right, 0
+        jl board_launcher
+        push bottom
+        push right
+        push top
+        push left
+        call PresentBoard
+        add esp, 16
+    board_launcher:
+        mov eax, curColor
+        cmp eax, shownLauncher
+        je board_done
+        mov shownLauncher, eax
+        push eax
+        call Con_DrawLauncher
+        add esp, 4
+    board_done:
+    }
+}
+
+struct HudNumber { int* value; int* previous; int row; };
+static const HudNumber hud[] = {
+    { &score, &shownScore, 2 }, { &highScore, &shownHigh, 3 },
+    { &shotsUntilDrop, &shownDrop, 7 }
+};
+static const char nextGlyph[] = "O";
+enum { HUD_COUNT = sizeof(hud) / sizeof(hud[0]), HUD_STRIDE = sizeof(hud[0]) };
+
+static void __cdecl DrawHud()
+{
+    // Walk the HUD fields and redraw only numbers or colors that have changed.
+    __asm {
+        lea esi, hud
+        mov ebx, HUD_COUNT
+    hud_field:
+        mov eax, [esi]
+        mov eax, [eax]
+        mov edx, [esi + 4]
+        cmp eax, [edx]
+        je hud_next_field
+        mov [edx], eax
+        push eax
+        push dword ptr [esi + 8]
+        push 49
+        call DrawNumber
+        add esp, 12
+    hud_next_field:
+        add esi, HUD_STRIDE
+        dec ebx
+        jnz hud_field
+        mov eax, nextColor
+        cmp shownNext, eax
+        je hud_done
+        mov shownNext, eax
+        movzx edx, word ptr palette[eax * 2]
+        push edx
+        lea eax, nextGlyph
+        push eax
+        push 6
+        push 49
+        call Con_DrawText
+        add esp, 16
+    hud_done:
+    }
+}
+
+static const char pauseText[] = "PAUSED - P resumes", clearPause[] = "                  ";
+
+void __cdecl Con_Render()
+{
+    // Gameplay and pause share one frame. Invalidate the caches on a new round.
+    __asm {
+        mov ebx, gameState
+        cmp ebx, shownState
+        je render_existing
+        cmp ebx, STATE_PLAYING
+        je render_play
+        cmp ebx, STATE_PAUSED
+        je render_play
+        push ebx
+        call Con_ShowScreen
+        add esp, 4
+        jmp render_state
+    render_play:
+        cmp shownState, STATE_PLAYING
+        je render_pause_label
+        cmp shownState, STATE_PAUSED
+        je render_pause_label
+        call ClearScreen
+        call Con_DrawFrame
+        lea edi, boardPixels
+        xor eax, eax
+        mov ecx, BOARD_WIDTH * BOARD_HEIGHT
+        cld
+        rep stosd
+        mov eax, -1
+        mov shownLauncher, eax
+        mov shownScore, eax
+        mov shownHigh, eax
+        mov shownDrop, eax
+        mov shownNext, eax
+    render_pause_label:
+        lea eax, clearPause
+        cmp ebx, STATE_PAUSED
+        jne render_label
+        lea eax, pauseText
+    render_label:
+        push 14
+        push eax
+        push FRAME_BOTTOM + 1
+        push 1
+        call Con_DrawText
+        add esp, 16
+    render_state:
+        mov shownState, ebx
+    render_existing:
+        cmp ebx, STATE_PLAYING
+        je render_game
+        cmp ebx, STATE_PAUSED
+        jne render_done
+    render_game:
+        call DrawBoard
+        call DrawHud
+    render_done:
+    }
 }

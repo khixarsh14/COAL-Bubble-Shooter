@@ -75,3 +75,7 @@ covered by the course. OUT_OF_OUTLINE.md therefore remains unchanged.
 | Usman Khan | Pending | Pending | Pending | Pending |
 | Abdullah bin Faheem | Pending | Pending | Pending | Pending |
 | Khizar Sheikh | Pending | Pending | Pending | Pending |
+
+## Playable integration assistance
+
+Codex implemented shooter motion and collision, the game state machine, scoring and drop/level helpers, live Win32 input and rendering, the main loop, and the gameplay and live console tests. Codex updated build inputs and documentation and executed the x86 batch verification. The original grid and match implementations were preserved. Human review of the integration remains to be recorded.

@@ -102,3 +102,13 @@ These calls do not enter the game executable or its code ratio.
 **Simpler alternative:** Human inspection is useful and remains requested. This
 small automated check also provides a repeatable test of actual console output
 and exit behavior, rather than assuming a successful build means it ran.
+
+## Live console events and incremental drawing
+
+`ReadKeyEvent` in `src/console.cpp` checks the Win32 input queue before reading a record, so the frame loop can keep running without a keypress. It translates native key and focus records into small integers. `Con_ReadKeys` tracks presses/releases in a byte array and maps virtual keys to action bits. A blocking key read would freeze the projectile until the next input event. Queue records also let the smoke test send keys to the child console without focusing it.
+
+`Con_DrawText` writes characters and their attributes directly at a coordinate. `Con_Render` compares each visible board cell against the last displayed color and updates only changed cells. This restores the underlying empty cell or danger dash as a shot moves and avoids clearing the full screen every frame.
+
+## Projectile grid crossings
+
+`Shooter_Update` in `src/shooter.cpp` uses four integer substeps per frame. When a substep crosses both a row and a column boundary, comparing distance divided by speed would require fractions. It instead multiplies each distance by the other axis's speed and compares the integer products. The earlier crossing determines the intermediate cell. If the times are equal, only a corner is touched and the final cell is checked directly. Checking only the final cell could skip an obstacle crossed between samples.

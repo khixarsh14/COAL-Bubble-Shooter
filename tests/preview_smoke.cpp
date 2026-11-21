@@ -1,34 +1,55 @@
-// Owner: Khizar Sheikh (Milestone 2 regression check).
-// Concepts: isolated Win32 child-console test; no changes to the game entry point.
-// See docs/OUT_OF_OUTLINE.md, Preview regression harness.
+// Live console integration test using input records sent to a child process.
 #include "../src/game.h"
 #include <stdio.h>
 #include <string.h>
 
-static int HasText(HANDLE screen, int x, int y, const char* expected)
+static bool HasText(HANDLE screen, int x, int y, const char* expected)
 {
-    char actual[80] = {0};
-    DWORD read = 0;
+    char actual[80] = {};
+    DWORD read;
     COORD position = {(SHORT)x, (SHORT)y};
     DWORD count = (DWORD)strlen(expected);
     return ReadConsoleOutputCharacterA(screen, actual, count, position, &read) &&
         read == count && memcmp(actual, expected, count) == 0;
 }
 
+static bool WaitText(HANDLE screen, int x, int y, const char* expected)
+{
+    for (int attempt = 0; attempt < 150; ++attempt) {
+        if (HasText(screen, x, y, expected)) return true;
+        Sleep(20);
+    }
+    return false;
+}
+
+static bool Tap(HANDLE input, WORD key)
+{
+    INPUT_RECORD events[2] = {};
+    events[0].EventType = KEY_EVENT;
+    events[0].Event.KeyEvent.bKeyDown = TRUE;
+    events[0].Event.KeyEvent.wRepeatCount = 1;
+    events[0].Event.KeyEvent.wVirtualKeyCode = key;
+    events[1] = events[0];
+    events[1].Event.KeyEvent.bKeyDown = FALSE;
+    DWORD written;
+    return WriteConsoleInputA(input, events, 2, &written) && written == 2;
+}
+
 int main()
 {
-    STARTUPINFOA startup = {0};
-    PROCESS_INFORMATION child = {0};
+    STARTUPINFOA startup = {};
+    PROCESS_INFORMATION child = {};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_HIDE;
     char command[] = "bin\\BubbleShooter.exe";
     if (!CreateProcessA(0, command, 0, 0, FALSE, CREATE_NEW_CONSOLE, 0, 0, &startup, &child)) {
-        printf("FAIL: cannot launch preview (%lu)\n", GetLastError());
+        printf("FAIL: cannot launch game (%lu)\n", GetLastError());
         return 1;
     }
+
     FreeConsole();
-    int attached = 0;
+    bool attached = false;
     for (int attempt = 0; attempt < 100 && !attached; ++attempt) {
         attached = AttachConsole(child.dwProcessId) != 0;
         if (!attached) Sleep(30);
@@ -40,32 +61,31 @@ int main()
         input = CreateFileA("CONIN$", GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
     }
-    int drawn = 0;
-    for (int attempt = 0; attempt < 100 && !drawn && screen != INVALID_HANDLE_VALUE; ++attempt) {
-        drawn = HasText(screen, 1, 0, "BUBBLE SHOOTER") &&
-            HasText(screen, 0, 1, "+--------------------------------+") &&
-            HasText(screen, 0, 17, "+--------------------------------+") &&
-            HasText(screen, 1, 13, "- - - - DANGER LINE") &&
-            HasText(screen, 39, 2, "SCORE : 0000") &&
-            HasText(screen, 39, 9, "CONTROLS") &&
-            HasText(screen, 1, 20, "Milestone 1: static frame only. ESC exits this preview.");
-        if (!drawn) Sleep(30);
-    }
-    CONSOLE_CURSOR_INFO cursor = {0};
-    int hidden = drawn && GetConsoleCursorInfo(screen, &cursor) && !cursor.bVisible;
-    INPUT_RECORD escape = {0};
-    escape.EventType = KEY_EVENT;
-    escape.Event.KeyEvent.bKeyDown = TRUE;
-    escape.Event.KeyEvent.wRepeatCount = 1;
-    escape.Event.KeyEvent.wVirtualKeyCode = VK_ESCAPE;
-    escape.Event.KeyEvent.uChar.AsciiChar = 27;
-    DWORD written = 0, exitCode = 1;
-    int sent = drawn && WriteConsoleInputA(input, &escape, 1, &written) && written == 1;
-    int exited = sent && WaitForSingleObject(child.hProcess, 5000) == WAIT_OBJECT_0 &&
+    const bool menu = screen != INVALID_HANDLE_VALUE && WaitText(screen, 2, 3, "1  Start game");
+    CONSOLE_CURSOR_INFO cursor = {};
+    const bool hidden = menu && GetConsoleCursorInfo(screen, &cursor) && !cursor.bVisible;
+    const bool help = menu && Tap(input, '2') && WaitText(screen, 2, 3, "Aim with Left/Right") &&
+        Tap(input, VK_ESCAPE) && WaitText(screen, 2, 3, "1  Start game");
+    const bool board = help && Tap(input, '1') && WaitText(screen, 49, 7, "7") &&
+        HasText(screen, 15, 16, "O") &&
+        HasText(screen, 1, 2, "O") && HasText(screen, 1, 13, "- ") &&
+        HasText(screen, 39, 3, "HIGH") && HasText(screen, 15, 15, "^");
+    const bool guide = board && HasText(screen, 15, 14, ".") && HasText(screen, 15, 7, "+") &&
+        Tap(input, VK_LEFT) && WaitText(screen, 11, 7, "+") && HasText(screen, 15, 7, " ") &&
+        Tap(input, VK_RIGHT) && WaitText(screen, 15, 7, "+");
+    const bool shot = guide && Tap(input, VK_SPACE) && WaitText(screen, 16, 14, "O") &&
+        WaitText(screen, 15, 14, ". ") && HasText(screen, 15, 13, "-.") &&
+        HasText(screen, 15, 15, "^");
+    const bool pause = shot && Tap(input, 'P') && WaitText(screen, 1, 18, "PAUSED") &&
+        Tap(input, 'P') && WaitText(screen, 1, 18, "      ");
+    DWORD exitCode = 1;
+    const bool exited = pause && Tap(input, VK_ESCAPE) && WaitText(screen, 2, 3, "1  Start game") &&
+        Tap(input, '3') && WaitForSingleObject(child.hProcess, 5000) == WAIT_OBJECT_0 &&
         GetExitCodeProcess(child.hProcess, &exitCode) && exitCode == 0;
-    int restored = exited && GetConsoleCursorInfo(screen, &cursor) && cursor.bVisible;
+    const bool restored = exited && GetConsoleCursorInfo(screen, &cursor) && cursor.bVisible;
+
     if (!exited) {
-        TerminateProcess(child.hProcess, 1); // Clean up only the child created by this test.
+        TerminateProcess(child.hProcess, 1);
         WaitForSingleObject(child.hProcess, 1000);
     }
     if (screen != INVALID_HANDLE_VALUE) CloseHandle(screen);
@@ -73,9 +93,12 @@ int main()
     if (attached) FreeConsole();
     CloseHandle(child.hThread);
     CloseHandle(child.hProcess);
-    printf("%s: preview frame text and danger line\n", drawn ? "PASS" : "FAIL");
-    printf("%s: cursor hidden while preview waits\n", hidden ? "PASS" : "FAIL");
-    printf("%s: ESC exits preview with code 0\n", exited ? "PASS" : "FAIL");
-    printf("%s: cursor visible after shutdown\n", restored ? "PASS" : "FAIL");
-    return drawn && hidden && exited && restored ? 0 : 1;
+    printf("%s: menu and hidden cursor\n", hidden ? "PASS" : "FAIL");
+    printf("%s: help screen returns to menu\n", help ? "PASS" : "FAIL");
+    printf("%s: live board, launcher, aim, danger line and drop HUD\n", board ? "PASS" : "FAIL");
+    printf("%s: dotted guide updates after aiming\n", guide ? "PASS" : "FAIL");
+    printf("%s: moving shot restores traversed cells and guide\n", shot ? "PASS" : "FAIL");
+    printf("%s: pause and resume\n", pause ? "PASS" : "FAIL");
+    printf("%s: menu exit with code 0 and restored cursor\n", restored ? "PASS" : "FAIL");
+    return hidden && help && board && guide && shot && pause && restored ? 0 : 1;
 }

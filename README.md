@@ -1,99 +1,44 @@
-# COAL-Bubble-Shooter
-Console-based Bubble Shooter game using x86 inline assembly and C++ for FAST-NUCES COAL Lab, Fall 2026.
+# COAL Bubble Shooter
 
-## Milestone 1 only
+A Windows console Bubble Shooter for FAST-NUCES COAL Lab. Game logic uses MSVC x86 inline assembly. C++ provides startup and Win32 services.
 
-`CODEX_CONTEXT.md` is the authoritative specification. This foundation displays a
-static console frame and provides a separate assembly addition proof. There is no
-gameplay yet. Wait for Khizar's build and test results before Milestone 2.
+## Build and play
 
-## Build and run (VS 2022)
-
-Install Visual Studio 2022 with **Desktop development with C++**, the **MSVC v143
-x86/x64 build tools**, and a Windows SDK. Open **x86 Native Tools Command Prompt
-for VS 2022**, then run:
+Install Visual Studio 2026 with Desktop development with C++, the v145 MSVC x86 tools, and a Windows SDK. Open the **x86 Native Tools Command Prompt for VS 2026**, change to this repository, and run:
 
 ```bat
-cd /d "C:\Users\Khizar\COAL PROJECT\COAL-Bubble-Shooter"
 build.bat
-bin\AsmProof.exe
 bin\BubbleShooter.exe
 ```
 
-The script checks the x86 developer environment, compiles and runs the proof
-first, then compiles the frame preview. A failed compiler or proof returns a
-nonzero exit code. It uses MSVC `cl`, `/Gd` (cdecl), and `/MACHINE:X86`.
-The source header also rejects non-MSVC and non-x86 targets.
-Output files go into ignored `bin/` and `obj/` directories.
+The build runs the separate assembly proof and then builds the game. For Visual Studio, use **Debug | Win32** in `BubbleShooter.sln` and select **BubbleShooter** as the startup project.
 
-The proof prints `MSVC x86 inline assembly: 7 + 5 = 12` and returns zero.
-The preview shows the title, ASCII border, empty 16-by-13 grid area, danger line
-at row 11, static launcher, side-panel placeholders, and controls. Press **ESC**
-to exit the preview. The side-panel controls describe the planned game; aiming,
-shooting, pause, and menus are not active. In the final game ESC will mean menu.
+- Main menu. **1** starts, **2** shows help, **3** exits.
+- Round. **Left/Right** aim, **Space** shoots, **P** pauses or resumes, and **Esc** returns to the menu. On game over, press any key to return to the menu.
+- The dotted guide shows the next shot's path, including wall bounces. The `+` marks its predicted landing cell. The guide returns after each shot.
+- Connect three same-color bubbles orthogonally to pop them. Detached bubbles fall for bonus points. Seven consecutive misses lower the ceiling, and a bubble surviving on or below the danger line ends the round. Clearing the board wins the round. A win or loss returns to the menu on a fresh keypress. The high score lasts for the current session.
 
-For Visual Studio debugging, open `BubbleShooter.sln`, select **Debug | Win32**,
-set `BubbleShooter` as the startup project, and press F5. Set `AsmProof` as the
-startup project to debug `Asm_Add` separately. Both projects use VS 2022's
-`v143` toolset, with no x64 configuration. VS Code is the source editor.
+## Verify
 
-Command-line solution build from the same VS 2022 prompt:
+From the same x86 prompt:
 
 ```bat
-msbuild BubbleShooter.sln /p:Configuration=Debug /p:Platform=Win32
-```
-
-## Structure and ownership
-
-| Files | Responsibility / owner |
-| --- | --- |
-| `src/game.h`, `src/data.cpp` | Shared interface and data; Usman coordinates all members |
-| `src/main.cpp`, `src/game.cpp`, `src/shooter.cpp` | Usman Khan: entry, future state machine and shooting |
-| `src/grid.cpp`, `src/match.cpp` | Khizar Sheikh: future grid and matching logic |
-| `src/console.h`, `src/console.cpp`, `src/score.cpp` | Abdullah bin Faheem: console and future score logic |
-| `src/asm_test.cpp` | Usman: isolated build proof, enabled only by `BUBBLE_ASM_TEST` |
-| `build.bat`, solution and projects | Build/integration support |
-| `tools/ratio.ps1` | Source line ratio report generator |
-| `docs/` | Walkthrough, outside-outline explanations, disclosure, tests, ratio |
-
-The five future gameplay `.cpp` files are comment-only placeholders. Reserved
-function declarations have no definitions yet and are never called. Console
-service declarations are in `console.h`, which includes the shared `game.h`.
-All initial game data is defined once in `data.cpp`; arrays start empty.
-
-## Inline assembly and course mapping
-
-`Asm_Add` uses an `__asm` block containing `MOV`, `ADD`, and `MOV`. MSVC gives
-the named parameters and local variable memory locations. EAX temporarily holds
-the sum; a normal C++ return returns the saved result. No manual stack changes
-or missing-return warning suppression are needed.
-
-For later assembly procedures, a C++ function declaration plays the role of
-`PROTO`, a function definition with its compiler-provided stack frame plays the
-role of `PROC`, and a normal call or inline `push`/`call` sequence plays the role
-of `INVOKE`. Passing a pointer supplies an address like `ADDR`. Those MASM
-directives themselves do not belong inside MSVC inline assembly.
-
-Irvine32 is not linked: it is designed for stand-alone MASM projects and is
-awkward to mix with inline assembly. Win32 console services replace `Gotoxy`,
-`SetTextColor`, `ReadKey`, and `Delay` (the last two services for gameplay remain
-deferred). No external libraries, external `.asm` files, or floating point are used.
-
-## Assembly ratio and validation
-
-From PowerShell in this directory:
-
-```powershell
+build.bat
+tests\build_game_tests.bat
+tests\build_match_tests.bat
+tests\build_grid_tests.bat
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\ratio.ps1
 ```
 
-The tool prints per-file and total assembly/C++ counts and saves `docs/RATIO.md`.
-The final project requires at least 70% assembly; target 72-75%. Milestone 1 is
-allowed a lower ratio: only three real instructions exist so far. Do not pad
-assembly counts. The report includes the standalone proof and all shared headers;
-it counts source text, including guarded code, rather than compiled machine code.
+The grid test script runs the live console smoke test after GridTests. The ratio tool saves the production and test measurements in [docs/RATIO.md](docs/RATIO.md). The production minimum is 70% assembly.
 
-See `docs/TESTING.md` for actual validation and pending checks,
-`docs/CODE_WALKTHROUGH.md` for every current function,
-`docs/OUT_OF_OUTLINE.md` for Win32, blocking input, and fixed-point data,
-and `docs/AI_DISCLOSURE.md` for generated work and the human review log.
+## Source map
+
+- `src/shooter.cpp` handles aiming, fixed-point projectile motion, and placement.
+- `src/game.cpp` owns round state, input edges, and the order of post-shot updates.
+- `src/grid.cpp` implements grid storage operations. `src/match.cpp` owns flood-fill, removal, and points awarded for a placement.
+- `src/score.cpp` owns the miss counter, ceiling shifts and decimal conversion.
+- `src/console.cpp` polls Win32 input, composes the board and HUD, and draws changed cells. `src/main.cpp` owns the console lifetime and frame loop.
+- `src/game.h` and `src/console.h` declare shared cdecl interfaces. `src/data.cpp` defines shared storage.
+
+A C++ function declaration and definition play the roles of MASM `PROTO` and `PROC`. A normal C++ call or a cdecl push/call sequence supplies the role of `INVOKE`, and an address parameter supplies the role of `ADDR`. Win32 console services provide cursor positioning, text attributes, input, and timing. The project does not link Irvine32.
