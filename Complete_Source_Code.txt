@@ -1,0 +1,1830 @@
+COAL BUBBLE SHOOTER - COMPLETE SOURCE CODE
+
+==================================================
+FILE: asm_test.cpp
+==================================================
+// Owner: Usman Khan (integration proof only; separate from the game).
+// Concepts: x86 inline MOV and ADD, function parameters, and integer return.
+// The macro prevents a second main when src\*.cpp builds the preview.
+#ifdef BUBBLE_ASM_TEST
+#include "game.h"
+#include <stdio.h>
+
+int __cdecl Asm_Add(int first, int second)
+{
+    int result;
+    // Add two small signed integers through EAX; leave ESP and EBP unchanged.
+    __asm {
+        mov eax, first   // Copy the first input into the 32-bit EAX register.
+        add eax, second  // Add the second input to EAX.
+        mov result, eax  // Copy the sum into the C++ local variable.
+    }
+    return result;
+}
+
+int main()
+{
+    int result = Asm_Add(7, 5);
+    printf("MSVC x86 inline assembly: 7 + 5 = %d\n", result);
+    return result == 12 ? 0 : 1;
+}
+#endif
+
+
+==================================================
+FILE: console.cpp
+==================================================
+// Concepts: nonblocking Win32 input and rendering with assembly cell/HUD updates.
+#include "console.h"
+#include <stdlib.h>
+#include <string.h>
+
+// Platform calls are described in docs/OUT_OF_OUTLINE.md, Live console events and incremental drawing.
+enum { GRID_X = 1, GRID_Y = 2, FRAME_BOTTOM = ROWS + 4, CELLS = COLS * ROWS,
+    BOARD_WIDTH = COLS * 2, BOARD_HEIGHT = ROWS + 1 };
+static HANDLE outputHandle, inputHandle;
+static CONSOLE_SCREEN_BUFFER_INFO savedInfo;
+static CONSOLE_CURSOR_INFO savedCursor;
+static DWORD savedInputMode;
+static char savedTitle[1024];
+static int consoleReady;
+static BYTE down[256];
+static BYTE guide[CELLS], guideGrid[CELLS];
+static CHAR_INFO boardPixels[BOARD_HEIGHT][BOARD_WIDTH];
+static_assert(sizeof(CHAR_INFO) == 4, "Board compositor packs each CHAR_INFO into a DWORD.");
+static int guideAim = -1;
+static int shownState = -1, shownLauncher;
+static int shownScore, shownHigh, shownDrop, shownNext;
+static const WORD palette[] = {7, 12, 10, 11, 14, 13};
+
+int __cdecl Con_Init()
+{
+    outputHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    inputHandle = GetStdHandle(STD_INPUT_HANDLE);
+    if (!GetConsoleScreenBufferInfo(outputHandle, &savedInfo) ||
+        !GetConsoleCursorInfo(outputHandle, &savedCursor) ||
+        !GetConsoleMode(inputHandle, &savedInputMode)) return 0;
+    GetConsoleTitleA(savedTitle, sizeof(savedTitle));
+    consoleReady = 1;
+    COORD size = savedInfo.dwSize;
+    if (size.X < 80) size.X = 80;
+    if (size.Y < 25) size.Y = 25;
+    SMALL_RECT window = {0, 0, 79, 24};
+    CONSOLE_CURSOR_INFO cursor = savedCursor;
+    cursor.bVisible = FALSE;
+    if (!SetConsoleScreenBufferSize(outputHandle, size) ||
+        !SetConsoleWindowInfo(outputHandle, TRUE, &window) ||
+        !SetConsoleCursorInfo(outputHandle, &cursor) ||
+        !SetConsoleMode(inputHandle, ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT) ||
+        !SetConsoleTitleA("Bubble Shooter")) {
+        Con_Shutdown();
+        return 0;
+    }
+    srand(GetTickCount());           // See docs/OUT_OF_OUTLINE.md, Pseudorandom colors.
+    return 1;
+}
+
+void __cdecl Con_Shutdown()
+{
+    if (!consoleReady) return;
+    SetConsoleMode(inputHandle, savedInputMode);
+    SetConsoleWindowInfo(outputHandle, TRUE, &savedInfo.srWindow);
+    SetConsoleCursorPosition(outputHandle, savedInfo.dwCursorPosition);
+    SetConsoleScreenBufferSize(outputHandle, savedInfo.dwSize);
+    SetConsoleTextAttribute(outputHandle, savedInfo.wAttributes);
+    SetConsoleCursorInfo(outputHandle, &savedCursor);
+    SetConsoleTitleA(savedTitle);
+    consoleReady = 0;
+}
+
+void __cdecl Con_DrawText(int x, int y, const char* s, int colorAttr)
+{
+    COORD position = {(SHORT)x, (SHORT)y};
+    DWORD written;
+    DWORD length = (DWORD)strlen(s);
+    WriteConsoleOutputCharacterA(outputHandle, s, length, position, &written);
+    FillConsoleOutputAttribute(outputHandle, (WORD)colorAttr, length, position, &written);
+}
+
+static void __cdecl ClearScreen()
+{
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(outputHandle, &info)) return;
+    COORD home = {0, 0};
+    DWORD written;
+    DWORD size = info.dwSize.X * info.dwSize.Y;
+    FillConsoleOutputCharacterA(outputHandle, ' ', size, home, &written);
+    FillConsoleOutputAttribute(outputHandle, 7, size, home, &written);
+}
+
+struct TextLine { int x, y; const char* text; int color; };
+static const char border[] = "+--------------------------------+", vertical[] = "|";
+static const TextLine frame[] = {
+    {1, 0, "BUBBLE SHOOTER", 15}, {0, 1, border, 7}, {0, FRAME_BOTTOM, border, 7},
+    {39, 2, "SCORE", 7}, {39, 3, "HIGH", 7},
+    {39, 6, "NEXT", 7}, {39, 7, "DROP IN", 7},
+    {39, 9, "Left / Right  Aim", 7}, {39, 10, "Space         Shoot", 7},
+    {39, 11, "P             Pause", 7}, {39, 12, "Esc           Menu", 7},
+    {39, GRID_Y + DANGER_ROW, "< Danger line", 12}
+};
+enum { FRAME_LINES = sizeof(frame) / sizeof(frame[0]), LINE_STRIDE = sizeof(TextLine) };
+
+static void __cdecl DrawLines(const TextLine* lines, int count)
+{
+    // Shared renderer for fixed console text, using the four cdecl fields.
+    __asm {
+        mov esi, lines
+        mov ebx, count
+        test ebx, ebx
+        jz lines_done
+    lines_next:
+        push dword ptr [esi + 12]
+        push dword ptr [esi + 8]
+        push dword ptr [esi + 4]
+        push dword ptr [esi]
+        call Con_DrawText
+        add esp, 16
+        add esi, LINE_STRIDE
+        dec ebx
+        jnz lines_next
+    lines_done:
+    }
+}
+
+void __cdecl Con_DrawFrame()
+{
+    // Draw the static labels and both walls once per entry into the playfield.
+    __asm {
+        push FRAME_LINES
+        lea eax, frame
+        push eax
+        call DrawLines
+        add esp, 8
+        mov ebx, GRID_Y
+        lea esi, vertical
+    frame_wall:
+        push 7
+        push esi
+        push ebx
+        push 0
+        call Con_DrawText
+        add esp, 16
+        push 7
+        push esi
+        push ebx
+        push COLS * 2 + 1
+        call Con_DrawText
+        add esp, 16
+        inc ebx
+        cmp ebx, FRAME_BOTTOM
+        jl frame_wall
+    }
+}
+
+static const char bubbleGlyph[] = "O ", dangerGlyph[] = "- ", blankCell[] = "  ";
+static const char aimGlyph[] = "^ ", launcherGlyph[] = "[O]";
+
+void __cdecl Con_DrawBubble(int col, int row, int color)
+{
+    // Grid, moving shot, and erase use the same cell-to-console mapping.
+    __asm {
+        mov ecx, color
+        cmp ecx, NUM_COLORS
+        ja cell_done
+        mov edx, row
+        cmp edx, LAUNCH_ROW
+        ja cell_done
+        mov eax, col
+        cmp eax, COLS
+        jae cell_done
+        lea eax, [eax * 2 + GRID_X]
+        movzx ecx, word ptr palette[ecx * 2]
+        lea esi, bubbleGlyph
+        cmp color, EMPTY
+        jne cell_emit
+        lea esi, blankCell
+        cmp edx, DANGER_ROW
+        jne cell_emit
+        lea esi, dangerGlyph
+    cell_emit:
+        add edx, GRID_Y
+        push ecx
+        push esi
+        push edx
+        push eax
+        call Con_DrawText
+        add esp, 16
+    cell_done:
+    }
+}
+
+void __cdecl Con_DrawShot(int cellX, int cellY, int color)
+{
+    Con_DrawBubble(cellX, cellY, color);
+}
+
+void __cdecl Con_DrawAim(int index)
+{
+    // Map the nine discrete aim indices onto the launcher lane.
+    __asm {
+        mov eax, index
+        cmp eax, NUM_ANGLES
+        jae marker_done
+        lea eax, [eax * 2 + GRID_X + (LAUNCH_COL - NUM_ANGLES / 2) * 2]
+        lea edx, aimGlyph
+        push 7
+        push edx
+        push GRID_Y + LAUNCH_ROW
+        push eax
+        call Con_DrawText
+        add esp, 16
+    marker_done:
+    }
+}
+
+void __cdecl Con_DrawLauncher(int color)
+{
+    // Translate the current color to a console attribute.
+    __asm {
+        mov eax, color
+        cmp eax, NUM_COLORS
+        ja launcher_done
+        movzx eax, word ptr palette[eax * 2]
+        lea edx, launcherGlyph
+        push eax
+        push edx
+        push GRID_Y + LAUNCH_ROW + 1
+        push GRID_X + 2 * LAUNCH_COL - 1
+        call Con_DrawText
+        add esp, 16
+    launcher_done:
+    }
+}
+
+enum { NO_EVENT = -1, SKIP_EVENT = -2, LOST_FOCUS = -3, DOWN_EVENT = 256 };
+struct KeyBinding { int virtualKey, mask; };
+static const KeyBinding bindings[] = {
+    {VK_LEFT, KEY_LEFT}, {VK_RIGHT, KEY_RIGHT}, {VK_SPACE, KEY_SPACE},
+    {'P', KEY_P}, {VK_ESCAPE, KEY_ESC}, {'1', KEY_1}, {'2', KEY_2}, {'3', KEY_3},
+    {VK_NUMPAD1, KEY_1}, {VK_NUMPAD2, KEY_2}, {VK_NUMPAD3, KEY_3}
+};
+enum { BINDING_COUNT = sizeof(bindings) / sizeof(bindings[0]), BINDING_STRIDE = sizeof(bindings[0]) };
+
+static int __cdecl ReadKeyEvent()
+{
+    DWORD pending = 0, read;
+    INPUT_RECORD event;
+    if (!GetNumberOfConsoleInputEvents(inputHandle, &pending) || !pending ||
+        !ReadConsoleInputA(inputHandle, &event, 1, &read) || !read) return NO_EVENT;
+    if (event.EventType == FOCUS_EVENT && !event.Event.FocusEvent.bSetFocus) return LOST_FOCUS;
+    if (event.EventType != KEY_EVENT || event.Event.KeyEvent.wVirtualKeyCode >= 256) return SKIP_EVENT;
+    return event.Event.KeyEvent.wVirtualKeyCode + (event.Event.KeyEvent.bKeyDown ? DOWN_EVENT : 0);
+}
+
+void __cdecl Con_ReadKeys()
+{
+    // Translate native events into held actions and one fresh-key pulse per frame.
+    __asm {
+        xor ebx, ebx
+        mov esi, 64                 // Bound queue work even when input is very busy.
+    keys_event:
+        call ReadKeyEvent
+        cmp eax, NO_EVENT
+        je keys_bindings
+        cmp eax, LOST_FOCUS
+        je keys_clear
+        cmp eax, SKIP_EVENT
+        je keys_next
+        mov ecx, eax
+        and ecx, DOWN_EVENT - 1
+        test eax, DOWN_EVENT
+        jz keys_release
+        cmp byte ptr down[ecx], 0
+        jne keys_next               // Ignore OS repeat. Arrows retain their held bits.
+        mov byte ptr down[ecx], 1
+        mov ebx, KEY_ANY
+        jmp keys_bindings           // Keep later raw transitions for the next frame.
+    keys_release:
+        cmp byte ptr down[ecx], 0
+        je keys_next
+        mov byte ptr down[ecx], 0
+        jmp keys_bindings           // Publish the release before a queued second tap.
+    keys_clear:
+        lea edi, down
+        xor eax, eax
+        mov ecx, DOWN_EVENT / 4
+        cld
+        rep stosd
+        jmp keys_bindings
+    keys_next:
+        dec esi
+        jnz keys_event
+    keys_bindings:
+        lea esi, bindings
+        mov edi, BINDING_COUNT
+    keys_binding:
+        mov ecx, [esi]
+        cmp byte ptr down[ecx], 0
+        je keys_binding_next
+        or ebx, [esi + 4]
+    keys_binding_next:
+        add esi, BINDING_STRIDE
+        dec edi
+        jnz keys_binding
+        mov keyBits, ebx
+    }
+}
+
+void __cdecl Con_Sleep(int ms) { Sleep(ms); }
+
+int __cdecl Con_Rand(int n) { return n > 0 ? rand() % n : 0; }
+
+static void __cdecl DrawNumber(int x, int y, int value)
+{
+    // Pad the decimal text to a fixed width and write it in one operation.
+    __asm {
+        lea esi, numBuf
+        push esi
+        push value
+        call Num_ToString
+        add esp, 8
+        mov edi, esi
+        xor eax, eax
+        mov ecx, 12
+        cld
+        repne scasb
+        dec edi
+        mov al, ' '
+        rep stosb
+        mov byte ptr [edi], 0
+        push 15
+        push esi
+        push y
+        push x
+        call Con_DrawText
+        add esp, 16
+    }
+}
+
+static const TextLine menuLines[] = {
+    {2, 3, "1  Start game", 7}, {2, 4, "2  How to play", 7}, {2, 5, "3  Exit", 7}
+};
+static const TextLine helpLines[] = {
+    {2, 3, "Aim with Left/Right and shoot with Space.", 7},
+    {2, 4, "Connect 3 of the same color up/down/left/right.", 7},
+    {2, 5, "Clear the board before bubbles reach the danger line.", 7},
+    {2, 7, "P pauses. Esc returns to the menu.", 7}
+};
+static const TextLine resultLines[] = {
+    {2, 5, "FINAL SCORE", 7},
+    {2, 7, "Press any key for the menu.", 7}
+};
+static const char title[] = "BUBBLE SHOOTER", lossTitle[] = "GAME OVER", winTitle[] = "YOU WIN";
+enum { MENU_LINES = sizeof(menuLines) / sizeof(menuLines[0]),
+    HELP_LINES = sizeof(helpLines) / sizeof(helpLines[0]),
+    RESULT_LINES = sizeof(resultLines) / sizeof(resultLines[0]) };
+
+void __cdecl Con_ShowScreen(int which)
+{
+    // Select the requested text layout, then append the final score if applicable.
+    __asm {
+        call ClearScreen
+        lea eax, title
+        push 15
+        push eax
+        push 0
+        push 1
+        call Con_DrawText
+        add esp, 16
+        mov eax, which
+        cmp eax, STATE_MENU
+        je screen_menu
+        cmp eax, STATE_HELP
+        je screen_help
+        cmp eax, STATE_GAMEOVER
+        je screen_loss
+        cmp eax, STATE_WIN
+        jne screen_done
+        lea eax, winTitle
+        push 10
+        jmp screen_result
+    screen_loss:
+        lea eax, lossTitle
+        push 12
+    screen_result:
+        push eax
+        push 3
+        push 2
+        call Con_DrawText
+        add esp, 16
+        push RESULT_LINES
+        lea eax, resultLines
+        push eax
+        call DrawLines
+        add esp, 8
+        push score
+        push 5
+        push 15
+        call DrawNumber
+        add esp, 12
+        jmp screen_done
+    screen_menu:
+        push MENU_LINES
+        lea eax, menuLines
+        jmp screen_lines
+    screen_help:
+        push HELP_LINES
+        lea eax, helpLines
+    screen_lines:
+        push eax
+        call DrawLines
+        add esp, 8
+    screen_done:
+    }
+}
+
+static void __cdecl RefreshGuide()
+{
+    // Cache the prediction by aim and the exact board used to compute it.
+    __asm {
+        mov eax, aimIndex
+        cmp eax, guideAim
+        jne guide_refresh
+        lea esi, grid
+        lea edi, guideGrid
+        mov ecx, CELLS
+        cld
+        repe cmpsb
+        je guide_current
+    guide_refresh:
+        mov guideAim, eax
+        lea esi, grid
+        lea edi, guideGrid
+        mov ecx, CELLS
+        cld
+        rep movsb
+        lea edx, guide
+        push edx
+        push eax
+        call Shooter_Predict
+        add esp, 8
+    guide_current:
+    }
+}
+
+static void __cdecl PresentBoard(int left, int top, int right, int bottom)
+{
+    const COORD size = {BOARD_WIDTH, BOARD_HEIGHT};
+    const COORD start = {(SHORT)left, (SHORT)top};
+    SMALL_RECT rect = {(SHORT)(GRID_X + left), (SHORT)(GRID_Y + top),
+        (SHORT)(GRID_X + right), (SHORT)(GRID_Y + bottom)};
+    if (!WriteConsoleOutputA(outputHandle, &boardPixels[0][0], size, start, &rect))
+        memset(boardPixels, 0, sizeof(boardPixels));
+}
+
+static void __cdecl DrawBoard()
+{
+    int shotCell, shotHalf, left, top, right, bottom;
+    // Compose both character slots per cell, then present the dirty rectangle
+    // in one Win32 call. A CHAR_INFO holds a glyph and its attribute together.
+    __asm {
+        mov shotCell, -1
+        cmp shotActive, 0
+        je board_guide
+        mov eax, shotY
+        sar eax, 8
+        cmp eax, LAUNCH_ROW
+        ja board_start
+        shl eax, 4
+        mov edx, shotX
+        mov ecx, edx
+        shr edx, 8
+        add eax, edx
+        mov shotCell, eax
+        and ecx, SUBPIX / 2
+        mov shotHalf, ecx
+        jmp board_start
+    board_guide:
+        call RefreshGuide
+    board_start:
+        mov left, BOARD_WIDTH
+        mov top, BOARD_HEIGHT
+        mov right, -1
+        xor ebx, ebx
+        lea edi, boardPixels
+    board_cell:
+        mov eax, (7 SHL 16) + ' '
+        mov edx, eax
+        mov esi, ebx
+        shr esi, 4
+        cmp esi, LAUNCH_ROW
+        je board_lane
+        movzx ecx, byte ptr grid[ebx]
+        test ecx, ecx
+        jnz board_bubble
+        cmp esi, DANGER_ROW
+        jne board_guide_cell
+        mov al, '-'
+    board_guide_cell:
+        cmp shotActive, 0
+        jne board_overlay
+        mov cl, byte ptr guide[ebx]
+        cmp cl, GUIDE_LANDING
+        je board_target
+        cmp cl, GUIDE_DOT
+        jne board_overlay
+        mov ecx, (8 SHL 16) + '.'
+        jmp board_mark
+    board_target:
+        mov ecx, (15 SHL 16) + '+'
+    board_mark:
+        // Leave the danger dash in the first slot when marking its cell.
+        cmp esi, DANGER_ROW
+        je board_mark_right
+        mov eax, ecx
+        jmp board_overlay
+    board_mark_right:
+        mov edx, ecx
+        jmp board_overlay
+    board_bubble:
+        movzx eax, word ptr palette[ecx * 2]
+        shl eax, 16
+        mov edx, eax
+        mov al, 'O'
+        mov dl, ' '
+        jmp board_overlay
+    board_lane:
+        cmp ebx, CELLS + LAUNCH_COL
+        jne board_overlay
+        mov al, '^'
+    board_overlay:
+        cmp ebx, shotCell
+        jne board_compare
+        mov ecx, curColor
+        movzx ecx, word ptr palette[ecx * 2]
+        shl ecx, 16
+        mov cl, 'O'
+        cmp shotHalf, 0
+        jne board_shot_right
+        mov eax, ecx
+        jmp board_compare
+    board_shot_right:
+        mov edx, ecx
+    board_compare:
+        cmp [edi], eax
+        jne board_changed
+        cmp [edi + 4], edx
+        je board_next
+    board_changed:
+        mov [edi], eax
+        mov [edi + 4], edx
+        mov ecx, ebx
+        and ecx, COLS - 1
+        shl ecx, 1
+        cmp ecx, left
+        jge board_right
+        mov left, ecx
+    board_right:
+        inc ecx
+        cmp ecx, right
+        jle board_rows
+        mov right, ecx
+    board_rows:
+        cmp top, BOARD_HEIGHT
+        jne board_last_row
+        mov top, esi
+    board_last_row:
+        mov bottom, esi
+    board_next:
+        add edi, 8
+        inc ebx
+        cmp ebx, COLS * BOARD_HEIGHT
+        jb board_cell
+        cmp right, 0
+        jl board_launcher
+        push bottom
+        push right
+        push top
+        push left
+        call PresentBoard
+        add esp, 16
+    board_launcher:
+        mov eax, curColor
+        cmp eax, shownLauncher
+        je board_done
+        mov shownLauncher, eax
+        push eax
+        call Con_DrawLauncher
+        add esp, 4
+    board_done:
+    }
+}
+
+struct HudNumber { int* value; int* previous; int row; };
+static const HudNumber hud[] = {
+    { &score, &shownScore, 2 }, { &highScore, &shownHigh, 3 },
+    { &shotsUntilDrop, &shownDrop, 7 }
+};
+static const char nextGlyph[] = "O";
+enum { HUD_COUNT = sizeof(hud) / sizeof(hud[0]), HUD_STRIDE = sizeof(hud[0]) };
+
+static void __cdecl DrawHud()
+{
+    // Walk the HUD fields and redraw only numbers or colors that have changed.
+    __asm {
+        lea esi, hud
+        mov ebx, HUD_COUNT
+    hud_field:
+        mov eax, [esi]
+        mov eax, [eax]
+        mov edx, [esi + 4]
+        cmp eax, [edx]
+        je hud_next_field
+        mov [edx], eax
+        push eax
+        push dword ptr [esi + 8]
+        push 49
+        call DrawNumber
+        add esp, 12
+    hud_next_field:
+        add esi, HUD_STRIDE
+        dec ebx
+        jnz hud_field
+        mov eax, nextColor
+        cmp shownNext, eax
+        je hud_done
+        mov shownNext, eax
+        movzx edx, word ptr palette[eax * 2]
+        push edx
+        lea eax, nextGlyph
+        push eax
+        push 6
+        push 49
+        call Con_DrawText
+        add esp, 16
+    hud_done:
+    }
+}
+
+static const char pauseText[] = "PAUSED - P resumes", clearPause[] = "                  ";
+
+void __cdecl Con_Render()
+{
+    // Gameplay and pause share one frame. Invalidate the caches on a new round.
+    __asm {
+        mov ebx, gameState
+        cmp ebx, shownState
+        je render_existing
+        cmp ebx, STATE_PLAYING
+        je render_play
+        cmp ebx, STATE_PAUSED
+        je render_play
+        push ebx
+        call Con_ShowScreen
+        add esp, 4
+        jmp render_state
+    render_play:
+        cmp shownState, STATE_PLAYING
+        je render_pause_label
+        cmp shownState, STATE_PAUSED
+        je render_pause_label
+        call ClearScreen
+        call Con_DrawFrame
+        lea edi, boardPixels
+        xor eax, eax
+        mov ecx, BOARD_WIDTH * BOARD_HEIGHT
+        cld
+        rep stosd
+        mov eax, -1
+        mov shownLauncher, eax
+        mov shownScore, eax
+        mov shownHigh, eax
+        mov shownDrop, eax
+        mov shownNext, eax
+    render_pause_label:
+        lea eax, clearPause
+        cmp ebx, STATE_PAUSED
+        jne render_label
+        lea eax, pauseText
+    render_label:
+        push 14
+        push eax
+        push FRAME_BOTTOM + 1
+        push 1
+        call Con_DrawText
+        add esp, 16
+    render_state:
+        mov shownState, ebx
+    render_existing:
+        cmp ebx, STATE_PLAYING
+        je render_game
+        cmp ebx, STATE_PAUSED
+        jne render_done
+    render_game:
+        call DrawBoard
+        call DrawHud
+    render_done:
+    }
+}
+
+
+==================================================
+FILE: data.cpp
+==================================================
+// Owner: shared data; Usman Khan coordinates integration with all three members.
+// Concepts: zero-initialized arrays, integers, and precomputed direction tables.
+#include "game.h"
+
+BYTE grid[COLS * ROWS] = {0};
+BYTE visited[COLS * ROWS] = {0};
+// Fixed-point data only; no movement yet. See docs/OUT_OF_OUTLINE.md, Fixed-point data.
+int angleDX[NUM_ANGLES] = {-222, -181, -128, -66, 0, 66, 128, 181, 222};
+int angleDY[NUM_ANGLES] = {128, 181, 222, 247, 256, 247, 222, 181, 128};
+int aimIndex = 4;
+int curColor = 1, nextColor = 1;
+int shotActive = 0;
+int shotX = 0, shotY = 0, shotDX = 0, shotDY = 0;
+int lastCol = 0, lastRow = 0;
+int score = 0, highScore = 0;
+int shotsUntilDrop = DROP_INTERVAL;
+int gameState = STATE_MENU;
+int keyBits = 0, popCount = 0;
+char numBuf[12] = {0};
+
+
+==================================================
+FILE: game.cpp
+==================================================
+// Concepts: state dispatch, input edges, and one transaction per landed shot.
+#include "game.h"
+#include "console.h"
+
+static int previousKeys;
+
+void __cdecl Game_Reset()
+{
+    // Start a fresh run. Retain the session record and held-key history.
+    __asm {
+        xor eax, eax
+        mov score, eax
+        mov shotActive, eax
+        mov shotX, eax
+        mov shotY, eax
+        mov shotDX, eax
+        mov shotDY, eax
+        mov aimIndex, NUM_ANGLES / 2
+        mov lastCol, -1
+        mov lastRow, -1
+        push NUM_COLORS
+        call Con_Rand
+        add esp, 4
+        inc eax
+        mov curColor, eax
+        push NUM_COLORS
+        call Con_Rand
+        add esp, 4
+        inc eax
+        mov nextColor, eax
+        push 1
+        call Score_UpdateDrop
+        add esp, 4
+        call Grid_Init
+        mov gameState, STATE_PLAYING
+    }
+}
+
+void __cdecl Game_Update()
+{
+    // ESI = action edges. EBX = held keys until the playing handler steps a shot.
+    __asm {
+        mov ebx, keyBits
+        mov esi, previousKeys
+        not esi
+        and esi, ebx
+        mov previousKeys, ebx
+
+        mov eax, gameState
+        cmp eax, STATE_PLAYING
+        je update_play
+        cmp eax, STATE_MENU
+        je update_menu
+        cmp eax, STATE_PAUSED
+        je update_pause
+        cmp eax, STATE_HELP
+        je update_help
+        cmp eax, STATE_GAMEOVER
+        je update_finished
+        cmp eax, STATE_WIN
+        je update_finished
+        jmp update_done
+
+    update_menu:
+        test esi, KEY_ESC | KEY_3
+        jnz update_exit
+        test esi, KEY_2
+        jnz update_open_help
+        test esi, KEY_1
+        jz update_done
+        call Game_Reset
+        jmp update_done
+    update_open_help:
+        mov gameState, STATE_HELP
+        jmp update_done
+    update_help:
+        test esi, KEY_ESC
+        jnz update_to_menu
+        jmp update_done
+    update_finished:
+        test ebx, KEY_ANY             // Console reports a fresh keydown pulse.
+        jnz update_to_menu
+        jmp update_done
+    update_pause:
+        test esi, KEY_ESC
+        jnz update_to_menu
+        test esi, KEY_P
+        jz update_done
+        mov gameState, STATE_PLAYING
+        jmp update_done
+
+    update_play:
+        test esi, KEY_ESC
+        jnz update_to_menu
+        test esi, KEY_P
+        jnz update_open_pause
+        mov eax, ebx
+        and eax, KEY_LEFT | KEY_RIGHT
+        cmp eax, KEY_LEFT
+        je update_aim_left
+        cmp eax, KEY_RIGHT
+        jne update_fire
+        push 1
+        jmp update_aim
+    update_aim_left:
+        push -1
+    update_aim:
+        call Shooter_Aim
+        add esp, 4
+    update_fire:
+        test esi, KEY_SPACE
+        jz update_move
+        call Shooter_Fire
+    update_move:
+        cmp shotActive, 0
+        je update_done
+        mov edi, score
+        call Shooter_Update
+        cmp shotActive, 0
+        jne update_done
+        cmp lastRow, 0
+        jl update_lost                // No legal empty cell existed in the path.
+        call Grid_CheckDanger
+        test eax, eax
+        jnz update_lost
+        xor eax, eax
+        cmp score, edi               // Match_Resolve owns both point awards.
+        je update_drop
+        inc eax                       // A changed score means a match popped.
+    update_drop:
+        push eax
+        call Score_UpdateDrop
+        add esp, 4
+        call Grid_CheckDanger
+        test eax, eax
+        jnz update_lost
+        call Grid_IsEmpty
+        test eax, eax
+        jz update_done
+        mov edx, STATE_WIN
+        jmp update_result
+
+    update_open_pause:
+        mov gameState, STATE_PAUSED
+        jmp update_done
+    update_lost:
+        mov edx, STATE_GAMEOVER
+    update_result:
+        mov eax, score
+        cmp eax, highScore
+        jle update_show_result
+        mov highScore, eax
+    update_show_result:
+        mov gameState, edx
+        jmp update_done
+    update_to_menu:
+        mov shotActive, 0
+        mov gameState, STATE_MENU
+        jmp update_done
+    update_exit:
+        mov gameState, STATE_EXIT
+    update_done:
+    }
+}
+
+
+==================================================
+FILE: grid.cpp
+==================================================
+// Owner: Khizar Sheikh.
+// Concepts: row-major indexing, bounds checks, loops, cdecl calls, string copying.
+#include "game.h"
+#include "console.h"
+
+// Local assembly constants; the shared interface and coordinate order stay unchanged.
+enum { TOTAL_CELLS = COLS * ROWS, SHIFT_CELLS = COLS * (ROWS - 1) };
+
+void __cdecl Grid_Init()
+{
+    // Clear all cells, then fill the fixed number of starting rows.
+    __asm {
+        cld                     // String writes must advance toward higher addresses.
+        xor eax, eax            // AL = EMPTY for byte stores.
+        lea edi, grid
+        mov ecx, TOTAL_CELLS
+        rep stosb               // Write AL to every grid byte.
+        mov ebx, STARTING_ROWS * COLS
+        lea edi, grid
+    grid_init_fill:
+        push NUM_COLORS         // cdecl argument: Con_Rand(5) returns 0..4 in EAX.
+        call Con_Rand           // EBX and EDI survive this normal cdecl call.
+        add esp, 4              // Caller removes the one 4-byte argument.
+        inc eax                 // Convert 0..4 into bubble colors 1..5.
+        mov byte ptr [edi], al
+        inc edi
+        dec ebx
+        jnz grid_init_fill
+    }
+}
+
+int __cdecl Grid_Get(int col, int row)
+{
+    int result;
+    // Validate signed coordinates before forming an address; invalid reads return EMPTY.
+    __asm {
+        mov ecx, col
+        cmp ecx, 0
+        jl grid_get_invalid
+        cmp ecx, COLS
+        jge grid_get_invalid
+        mov eax, row
+        cmp eax, 0
+        jl grid_get_invalid
+        cmp eax, ROWS
+        jge grid_get_invalid
+        shl eax, 4              // row * 16, because COLS is 16.
+        add eax, ecx            // Linear index = row * COLS + col.
+        lea edx, grid
+        movzx eax, byte ptr [edx + eax] // Expand the unsigned byte into an int.
+        jmp grid_get_done
+    grid_get_invalid:
+        xor eax, eax
+    grid_get_done:
+        mov result, eax
+    }
+    return result;
+}
+
+void __cdecl Grid_Set(int col, int row, int color)
+{
+    // Ignore invalid coordinates or colors; EMPTY (0) is a valid erase value.
+    __asm {
+        mov edx, col
+        cmp edx, 0
+        jl grid_set_done
+        cmp edx, COLS
+        jge grid_set_done
+        mov eax, row
+        cmp eax, 0
+        jl grid_set_done
+        cmp eax, ROWS
+        jge grid_set_done
+        mov ecx, color
+        cmp ecx, EMPTY
+        jl grid_set_done
+        cmp ecx, NUM_COLORS
+        jg grid_set_done
+        shl eax, 4
+        add eax, edx
+        lea esi, grid
+        mov byte ptr [esi + eax], cl // Only the checked color byte is stored.
+    grid_set_done:
+    }
+}
+
+void __cdecl Grid_ShiftDown()
+{
+    // Copy old rows 0..11 to rows 1..12 backward; discard old row 12 and clear row 0.
+    __asm {
+        lea esi, grid
+        add esi, SHIFT_CELLS - 1 // Last source byte: index 191 (row 11, col 15).
+        lea edi, grid
+        add edi, TOTAL_CELLS - 1 // Last destination byte: index 207.
+        mov ecx, SHIFT_CELLS     // Exactly 192 overlapping bytes.
+        std                     // Copy from high addresses toward low addresses.
+        rep movsb
+        cld                     // Restore forward direction immediately, before any call.
+        xor eax, eax
+        lea edi, grid
+        mov ecx, COLS
+        rep stosb               // New row 0 is EMPTY until Grid_AddTopRow is called.
+    }
+}
+
+void __cdecl Grid_AddTopRow()
+{
+    // Fill exactly row 0; preserve all rows below it.
+    __asm {
+        lea edi, grid
+        mov ebx, COLS
+    grid_top_fill:
+        push NUM_COLORS
+        call Con_Rand           // The persistent pointer/count use cdecl-preserved EDI/EBX.
+        add esp, 4
+        inc eax
+        mov byte ptr [edi], al
+        inc edi
+        dec ebx
+        jnz grid_top_fill
+    }
+}
+
+int __cdecl Grid_CheckDanger()
+{
+    int result;
+    // Scan the final two rows (32 cells), including row 12's final byte.
+    __asm {
+        lea esi, grid
+        add esi, DANGER_ROW * COLS
+        mov ecx, TOTAL_CELLS - DANGER_ROW * COLS
+        xor eax, eax            // Default: no bubble in either danger row.
+    grid_danger_scan:
+        cmp byte ptr [esi], EMPTY
+        jne grid_danger_found
+        inc esi
+        dec ecx
+        jnz grid_danger_scan
+        jmp grid_danger_done
+    grid_danger_found:
+        mov eax, 1
+    grid_danger_done:
+        mov result, eax
+    }
+    return result;
+}
+
+int __cdecl Grid_IsEmpty()
+{
+    int result;
+    // Return 1 only if every byte is EMPTY; any nonzero byte means not empty.
+    __asm {
+        lea esi, grid
+        mov ecx, TOTAL_CELLS
+        mov eax, 1
+    grid_empty_scan:
+        cmp byte ptr [esi], EMPTY
+        jne grid_empty_found
+        inc esi
+        dec ecx
+        jnz grid_empty_scan
+        jmp grid_empty_done
+    grid_empty_found:
+        xor eax, eax
+    grid_empty_done:
+        mov result, eax
+    }
+    return result;
+}
+
+
+==================================================
+FILE: main.cpp
+==================================================
+// Concepts: console lifetime and nonblocking frame loop.
+#include "console.h"
+#include <stdio.h>
+
+int main()
+{
+    if (!Con_Init()) {
+        fprintf(stderr, "Cannot initialize an 80x25 Windows console. Run in a console window.\n");
+        return 1;
+    }
+    Con_Render();
+    while (gameState != STATE_EXIT) {
+        Con_ReadKeys();
+        Game_Update();
+        if (gameState == STATE_EXIT) break;
+        Con_Render();
+        Con_Sleep(30);
+    }
+    Con_Shutdown();
+    return 0;
+}
+
+
+==================================================
+FILE: match.cpp
+==================================================
+// Owner: Khizar Sheikh.
+// Concepts: recursive four-neighbour flood-fill, cdecl stack frames, visited arrays.
+#include "game.h"
+
+enum { TOTAL_CELLS = COLS * ROWS };
+
+void __cdecl Match_Fill(int col, int row, int color, int mode)
+{
+    // Mark one component without changing grid or score. Each recursive call
+    // reloads parameters from its own compiler-managed frame; no live register
+    // value is assumed to survive a child call. Never change EBP manually.
+    __asm {
+        mov ecx, col
+        cmp ecx, 0
+        jl match_fill_done
+        cmp ecx, COLS
+        jge match_fill_done
+        mov eax, row
+        cmp eax, 0
+        jl match_fill_done
+        cmp eax, ROWS
+        jge match_fill_done
+        shl eax, 4              // row * 16, after signed bounds checks.
+        add eax, ecx            // index = row * COLS + col.
+        lea edx, visited
+        cmp byte ptr [edx + eax], 0
+        jne match_fill_done     // Stop cycles and avoid counting a cell twice.
+        lea edx, grid
+        movzx ecx, byte ptr [edx + eax]
+        cmp ecx, EMPTY
+        je match_fill_done
+        cmp mode, 1
+        je match_fill_mark      // Connectivity accepts any nonempty color.
+        cmp mode, 0
+        jne match_fill_done     // Defensive: unknown modes leave scratch unchanged.
+        cmp ecx, color          // Compare the whole int, not a truncated color byte.
+        jne match_fill_done
+    match_fill_mark:
+        lea edx, visited
+        mov byte ptr [edx + eax], 1 // Mark BEFORE recursing, to break cycles.
+        inc popCount
+
+        // UP: push mode, color, row-1, col (right-to-left cdecl arguments).
+        push mode
+        push color
+        mov eax, row
+        dec eax
+        push eax
+        push col
+        call Match_Fill
+        add esp, 16             // Four int arguments; CALL's return address is separate.
+
+        // DOWN: reload parent parameters after the child has returned.
+        push mode
+        push color
+        mov eax, row
+        inc eax
+        push eax
+        push col
+        call Match_Fill
+        add esp, 16
+
+        // LEFT
+        push mode
+        push color
+        push row
+        mov eax, col
+        dec eax
+        push eax
+        call Match_Fill
+        add esp, 16
+
+        // RIGHT
+        push mode
+        push color
+        push row
+        mov eax, col
+        inc eax
+        push eax
+        call Match_Fill
+        add esp, 16
+    match_fill_done:
+    }
+    // MSVC's normal epilogue restores the frame and returns; no hand-written RET.
+}
+
+void __cdecl Match_Resolve(int col, int row)
+{
+    int matchedCount;
+    // Validate first, find a same-color component, pop only groups of 3+, and
+    // award pop points BEFORE the floating search reuses visited and popCount.
+    __asm {
+        mov ecx, col
+        cmp ecx, 0
+        jl match_resolve_done
+        cmp ecx, COLS
+        jge match_resolve_done
+        mov eax, row
+        cmp eax, 0
+        jl match_resolve_done
+        cmp eax, ROWS
+        jge match_resolve_done
+        shl eax, 4
+        add eax, ecx
+        lea esi, grid
+        movzx ebx, byte ptr [esi + eax] // Save selected color across scratch clearing.
+        cmp ebx, EMPTY
+        je match_resolve_done
+        cld
+        xor eax, eax
+        lea edi, visited
+        mov ecx, TOTAL_CELLS
+        rep stosb
+        mov popCount, 0
+        push 0                  // mode 0: exact color.
+        push ebx                // selected color
+        push row
+        push col
+        call Match_Fill
+        add esp, 16
+        mov eax, popCount
+        cmp eax, MIN_MATCH
+        jl match_resolve_done   // No pop means NO floating removal or points.
+        mov matchedCount, eax   // A frame-local copy survives later scratch reuse.
+        lea esi, grid
+        lea edi, visited
+        mov ecx, TOTAL_CELLS
+    match_resolve_pop:
+        cmp byte ptr [edi], 0
+        je match_resolve_next
+        mov byte ptr [esi], EMPTY
+    match_resolve_next:
+        inc esi
+        inc edi
+        dec ecx
+        jnz match_resolve_pop
+        mov eax, matchedCount
+        imul eax, POINTS_POP    // Matched bubble COUNT -> points, exactly once.
+        add score, eax
+        call Match_DropFloating // No arguments; this service owns floating points.
+    match_resolve_done:
+    }
+}
+
+void __cdecl Match_DropFloating()
+{
+    int topCol;
+    // Caller invokes this only after a successful pop. Mark every top-connected
+    // component in mode 1, then remove and score each unmarked nonempty cell.
+    __asm {
+        cld                     // Always establish direction before REP STOSB.
+        xor eax, eax
+        lea edi, visited
+        mov ecx, TOTAL_CELLS
+        rep stosb
+        mov popCount, 0         // Now counts TOP-CONNECTED cells, not matched cells.
+        mov topCol, 0          // A frame-local index survives recursive child calls.
+    match_float_top:
+        mov eax, topCol
+        lea esi, grid
+        cmp byte ptr [esi + eax], EMPTY
+        je match_float_next_top
+        push 1                  // mode 1: connectivity across all nonempty colors.
+        push 0                  // color ignored in mode 1.
+        push 0                  // row = 0.
+        push eax                // col = topCol.
+        call Match_Fill
+        add esp, 16
+    match_float_next_top:
+        inc topCol              // Reloaded from the frame; no volatile register reliance.
+        cmp topCol, COLS
+        jl match_float_top
+        lea esi, grid
+        lea edi, visited
+        mov ecx, TOTAL_CELLS
+    match_float_scan:
+        cmp byte ptr [esi], EMPTY
+        je match_float_next
+        cmp byte ptr [edi], 0
+        jne match_float_next    // Any path to row 0 keeps this bubble attached.
+        mov byte ptr [esi], EMPTY
+        add score, POINTS_DROP // Score each removed floating bubble exactly once.
+    match_float_next:
+        inc esi
+        inc edi
+        dec ecx
+        jnz match_float_scan
+    }
+}
+
+
+==================================================
+FILE: score.cpp
+==================================================
+// Concepts: integer scoring, a fixed ceiling-drop interval, decimal division.
+#include "game.h"
+
+void __cdecl Score_AddPop(int count)
+{
+    // Available to callers that own an award. Match_Resolve awards its own.
+    __asm {
+        mov eax, count
+        test eax, eax
+        jle pop_score_done
+        imul eax, POINTS_POP
+        add score, eax
+    pop_score_done:
+    }
+}
+
+void __cdecl Score_AddDrop(int count)
+{
+    // Available to callers that own an award. Match_DropFloating awards its own.
+    __asm {
+        mov eax, count
+        test eax, eax
+        jle drop_score_done
+        imul eax, POINTS_DROP
+        add score, eax
+    drop_score_done:
+    }
+}
+
+void __cdecl Score_UpdateDrop(int popped)
+{
+    // A pop resets the interval. Only a miss can shift and refill the ceiling.
+    __asm {
+        cmp popped, 0
+        jne drop_reset
+        dec shotsUntilDrop
+        jg drop_done
+        call Grid_ShiftDown
+        call Grid_AddTopRow
+    drop_reset:
+        mov shotsUntilDrop, DROP_INTERVAL
+    drop_done:
+    }
+}
+
+void __cdecl Num_ToString(int value, char* bufferAddress)
+{
+    // Convert signed int32. After NEG, even INT_MIN is a valid unsigned magnitude.
+    __asm {
+        mov edi, bufferAddress
+        mov eax, value
+        test eax, eax
+        jns number_magnitude
+        mov byte ptr [edi], '-'
+        inc edi
+        neg eax
+    number_magnitude:
+        xor ecx, ecx
+        mov ebx, 10
+    number_divide:
+        xor edx, edx
+        div ebx                      // EDX = digit, EAX = remaining magnitude.
+        push edx
+        inc ecx
+        test eax, eax
+        jnz number_divide
+    number_write:
+        pop edx                      // Last remainder is the most significant digit.
+        add dl, '0'
+        mov byte ptr [edi], dl
+        inc edi
+        dec ecx
+        jnz number_write
+        mov byte ptr [edi], 0
+    }
+}
+
+
+==================================================
+FILE: shooter.cpp
+==================================================
+// Concepts: indexed aim, signed fixed-point movement, and cdecl collision queries.
+#include "console.h"
+#include <stddef.h>
+
+enum { WALL = COLS * SUBPIX, STEP_COUNT = 4,
+    // The smallest upward substep in the aim table is 32 fixed-point units.
+    GUIDE_STEPS = (LAUNCH_ROW + 1) * SUBPIX / 32 };
+enum { FLIGHT, LANDED, BLOCKED };
+struct ShotMotion { int x, y, dx, dy, col, row; };
+enum {
+    MOTION_X = offsetof(ShotMotion, x), MOTION_Y = offsetof(ShotMotion, y),
+    MOTION_DX = offsetof(ShotMotion, dx), MOTION_DY = offsetof(ShotMotion, dy),
+    MOTION_COL = offsetof(ShotMotion, col), MOTION_ROW = offsetof(ShotMotion, row)
+};
+
+void __cdecl Shooter_Aim(int step)
+{
+    // Clamp the requested index. JO handles a large positive step wrapping.
+    __asm {
+        mov eax, aimIndex
+        add eax, step
+        jo aim_high
+        cmp eax, 0
+        jl aim_low
+        cmp eax, NUM_ANGLES - 1
+        jle aim_store
+    aim_high:
+        mov eax, NUM_ANGLES - 1
+        jmp aim_store
+    aim_low:
+        xor eax, eax
+    aim_store:
+        mov aimIndex, eax
+    }
+}
+
+static void __cdecl StartMotion(ShotMotion* motion, int index)
+{
+    // Both prediction and firing initialize the same fixed-point state.
+    __asm {
+        mov ecx, motion
+        mov eax, index
+        mov edx, angleDX[eax * 4]
+        mov [ecx + MOTION_DX], edx
+        mov edx, angleDY[eax * 4]
+        neg edx
+        mov [ecx + MOTION_DY], edx
+        mov dword ptr [ecx + MOTION_X], LAUNCH_COL * SUBPIX + SUBPIX / 2
+        mov dword ptr [ecx + MOTION_Y], LAUNCH_ROW * SUBPIX + SUBPIX / 2
+        mov dword ptr [ecx + MOTION_COL], -1
+        mov dword ptr [ecx + MOTION_ROW], -1
+    }
+}
+
+static void __cdecl SaveMotion(const ShotMotion* motion)
+{
+    __asm {
+        mov ecx, motion
+        mov eax, [ecx + MOTION_X]
+        mov shotX, eax
+        mov eax, [ecx + MOTION_Y]
+        mov shotY, eax
+        mov eax, [ecx + MOTION_DX]
+        mov shotDX, eax
+        mov eax, [ecx + MOTION_DY]
+        mov shotDY, eax
+        mov eax, [ecx + MOTION_COL]
+        mov lastCol, eax
+        mov eax, [ecx + MOTION_ROW]
+        mov lastRow, eax
+    }
+}
+
+void __cdecl Shooter_Fire()
+{
+    ShotMotion motion;
+    // Start and publish a live shot only when the launcher is idle.
+    __asm {
+        cmp shotActive, 0
+        jne fire_done
+        lea esi, motion
+        push aimIndex
+        push esi
+        call StartMotion
+        add esp, 8
+        push esi
+        call SaveMotion
+        add esp, 4
+        mov shotActive, 1
+    fire_done:
+    }
+}
+
+static int __cdecl AdvanceMotion(ShotMotion* motion, int steps, BYTE* guide)
+{
+    int fromX, fromY, endCol, endRow, result;
+    // Visit each crossed cell in order. EBX holds the private motion state.
+    // See docs/OUT_OF_OUTLINE.md, Projectile grid crossings.
+    __asm {
+        mov ebx, motion
+    shot_step:
+        mov eax, dword ptr [ebx + MOTION_DX]
+        sar eax, 2
+        mov edx, dword ptr [ebx + MOTION_X]
+        mov fromX, edx
+        add eax, dword ptr [ebx + MOTION_X]
+        cmp eax, 0
+        jl shot_left_wall
+        cmp eax, WALL
+        jl shot_store_x
+        mov edx, 2 * WALL - 1       // Mirror overshoot into [0, WALL-1].
+        sub edx, eax
+        mov eax, edx
+        jmp shot_reflect
+    shot_left_wall:
+        not eax                     // -x-1 mirrors the left boundary.
+    shot_reflect:
+        neg dword ptr [ebx + MOTION_DX]
+    shot_store_x:
+        mov dword ptr [ebx + MOTION_X], eax
+        sar eax, 8
+        mov esi, eax                // ESI = column across cdecl calls.
+        mov endCol, eax
+        mov eax, dword ptr [ebx + MOTION_DY]
+        sar eax, 2
+        mov edx, dword ptr [ebx + MOTION_Y]
+        mov fromY, edx
+        add dword ptr [ebx + MOTION_Y], eax
+        mov eax, dword ptr [ebx + MOTION_Y]
+        sar eax, 8
+        cmp eax, ROWS
+        jge shot_continue           // Still in the launcher area.
+        cmp eax, 0
+        jge shot_row_ready
+        xor eax, eax
+    shot_row_ready:
+        mov edi, eax                // EDI = row across cdecl calls.
+        mov endRow, eax
+        mov ecx, fromX
+        sar ecx, 8
+        cmp ecx, esi
+        je shot_visit
+        mov edx, fromY
+        sar edx, 8
+        cmp edx, edi
+        je shot_visit
+
+        // Both axes crossed a boundary. Compare the crossing times by
+        // multiplying each distance by the other axis's speed.
+        mov eax, fromX
+        and eax, SUBPIX - 1
+        cmp dword ptr [ebx + MOTION_DX], 0
+        jl shot_x_distance
+        neg eax
+        add eax, SUBPIX
+    shot_x_distance:
+        mov edx, dword ptr [ebx + MOTION_DY]
+        sar edx, 2
+        neg edx
+        imul eax, edx
+        mov ecx, fromY
+        and ecx, SUBPIX - 1
+        mov edx, dword ptr [ebx + MOTION_DX]
+        sar edx, 2
+        test edx, edx
+        jns shot_x_speed
+        neg edx
+    shot_x_speed:
+        imul ecx, edx
+        cmp eax, ecx
+        je shot_visit               // Equal times touch a corner only.
+        jb shot_x_first
+        mov esi, fromX              // Y crossed first: visit the old column.
+        sar esi, 8
+        jmp shot_visit
+    shot_x_first:
+        mov edi, fromY              // X crossed first: visit the old row.
+        sar edi, 8
+        cmp edi, ROWS
+        jae shot_end_cell           // The intermediate cell is in the launch lane.
+    shot_visit:
+        push edi
+        push esi
+        call Grid_Get
+        add esp, 8
+        test eax, eax
+        jnz shot_use_previous
+        mov [ebx + MOTION_COL], esi
+        mov [ebx + MOTION_ROW], edi
+        mov edx, guide
+        test edx, edx
+        jz shot_check_ceiling
+        mov eax, edi
+        shl eax, 4
+        add eax, esi
+        mov byte ptr [edx + eax], GUIDE_DOT
+    shot_check_ceiling:
+        test edi, edi
+        jz shot_place               // Entered an empty ceiling cell.
+        cmp esi, endCol
+        jne shot_end_cell
+        cmp edi, endRow
+        je shot_continue
+    shot_end_cell:
+        mov esi, endCol
+        mov edi, endRow
+        jmp shot_visit
+    shot_continue:
+        dec steps
+        jnz shot_step
+        mov result, FLIGHT
+        jmp shot_done
+
+    shot_use_previous:
+        mov edi, [ebx + MOTION_ROW]
+        mov esi, [ebx + MOTION_COL]
+        cmp edi, ROWS               // Unsigned checks reject -1 as well.
+        jae shot_blocked
+        cmp esi, COLS
+        jae shot_blocked
+        push edi
+        push esi
+        call Grid_Get
+        add esp, 8
+        test eax, eax
+        jnz shot_blocked
+    shot_place:
+        mov result, LANDED
+        jmp shot_done
+    shot_blocked:
+        mov dword ptr [ebx + MOTION_COL], -1
+        mov dword ptr [ebx + MOTION_ROW], -1
+        mov result, BLOCKED
+    shot_done:
+    }
+    return result;
+}
+
+void __cdecl Shooter_Update()
+{
+    ShotMotion motion;
+    // Only the live caller commits a placement or advances the color queue.
+    __asm {
+        cmp shotActive, 0
+        je update_done
+        lea esi, motion
+        mov eax, shotX
+        mov [esi + MOTION_X], eax
+        mov eax, shotY
+        mov [esi + MOTION_Y], eax
+        mov eax, shotDX
+        mov [esi + MOTION_DX], eax
+        mov eax, shotDY
+        mov [esi + MOTION_DY], eax
+        mov eax, lastCol
+        mov [esi + MOTION_COL], eax
+        mov eax, lastRow
+        mov [esi + MOTION_ROW], eax
+        push 0
+        push STEP_COUNT
+        push esi
+        call AdvanceMotion
+        add esp, 12
+        mov ebx, eax                 // Save the flight result across the copy.
+        push esi
+        call SaveMotion
+        add esp, 4
+        cmp ebx, FLIGHT
+        je update_done
+        mov shotActive, 0
+        cmp ebx, LANDED
+        jne update_done
+        mov esi, lastCol
+        mov edi, lastRow
+        push curColor
+        push edi
+        push esi
+        call Grid_Set
+        add esp, 12
+        push edi
+        push esi
+        call Match_Resolve
+        add esp, 8
+        mov eax, nextColor
+        mov curColor, eax
+        push NUM_COLORS
+        call Con_Rand
+        add esp, 4
+        inc eax
+        mov nextColor, eax
+    update_done:
+    }
+}
+
+void __cdecl Shooter_Predict(int index, BYTE* guide)
+{
+    ShotMotion motion;
+    // The guide is a caller-owned ROWS*COLS mask, independent of the game grid.
+    __asm {
+        cld
+        mov edi, guide
+        xor eax, eax
+        mov ecx, COLS * ROWS
+        rep stosb
+        mov eax, index
+        cmp eax, NUM_ANGLES
+        jae predict_done
+        lea esi, motion
+        push eax
+        push esi
+        call StartMotion
+        add esp, 8
+        push guide
+        push GUIDE_STEPS
+        push esi
+        call AdvanceMotion
+        add esp, 12
+        cmp eax, LANDED
+        jne predict_done
+        mov eax, [esi + MOTION_ROW]
+        shl eax, 4
+        add eax, [esi + MOTION_COL]
+        mov edi, guide
+        mov byte ptr [edi + eax], GUIDE_LANDING
+    predict_done:
+    }
+}
+
+
+==================================================
+FILE: console.h
+==================================================
+// Owner: Abdullah bin Faheem.
+// Concepts: plain cdecl interfaces to Win32 console services.
+#ifndef BUBBLE_CONSOLE_H
+#define BUBBLE_CONSOLE_H
+#include "game.h"
+
+// Returns 1 on success, 0 if no suitable Windows console is available.
+int __cdecl Con_Init();
+void __cdecl Con_Shutdown();
+void __cdecl Con_DrawFrame();
+void __cdecl Con_DrawText(int x, int y, const char* s, int colorAttr);
+void __cdecl Con_Render();
+void __cdecl Con_DrawBubble(int col, int row, int color);
+void __cdecl Con_DrawShot(int cellX, int cellY, int color);
+void __cdecl Con_DrawAim(int index);
+void __cdecl Con_DrawLauncher(int color);
+// Writes the held action bits and a KEY_ANY pulse for each fresh keydown.
+void __cdecl Con_ReadKeys();
+void __cdecl Con_Sleep(int ms);
+int __cdecl Con_Rand(int n);
+void __cdecl Con_ShowScreen(int which);
+#endif
+
+
+==================================================
+FILE: game.h
+==================================================
+// Owner: shared interface; Usman Khan coordinates integration.
+// Concepts: constants, external data, and cdecl function declarations.
+#ifndef BUBBLE_GAME_H
+#define BUBBLE_GAME_H
+
+#if !defined(_MSC_VER) || defined(__clang__) || !defined(_M_IX86)
+#error Build with Microsoft MSVC targeting x86 (Win32).
+#endif
+#include <windows.h>
+
+enum {
+    COLS = 16, ROWS = 13, DANGER_ROW = 11,
+    EMPTY = 0, NUM_COLORS = 5, NUM_ANGLES = 9,
+    MIN_MATCH = 3, POINTS_POP = 10, POINTS_DROP = 20, SUBPIX = 256
+};
+enum { LAUNCH_COL = (COLS - 1) / 2, LAUNCH_ROW = ROWS };
+enum { STARTING_ROWS = 5, DROP_INTERVAL = 7 };
+enum { GUIDE_DOT = 1, GUIDE_LANDING = 2 };
+enum {
+    STATE_MENU = 0, STATE_PLAYING = 1, STATE_PAUSED = 2,
+    STATE_GAMEOVER = 3, STATE_HELP = 4, STATE_EXIT = 5, STATE_WIN = 6
+};
+enum {
+    KEY_LEFT = 1, KEY_RIGHT = 2, KEY_SPACE = 4, KEY_P = 8,
+    KEY_ESC = 16, KEY_1 = 32, KEY_2 = 64, KEY_3 = 128, KEY_ANY = 256
+};
+
+extern BYTE grid[COLS * ROWS], visited[COLS * ROWS];
+extern int angleDX[NUM_ANGLES], angleDY[NUM_ANGLES];
+extern int aimIndex, curColor, nextColor, shotActive;
+extern int shotX, shotY, shotDX, shotDY, lastCol, lastRow;
+extern int score, highScore, shotsUntilDrop;
+extern int gameState, keyBits, popCount;
+extern char numBuf[12];
+
+// Game_Reset starts a new run and preserves the session high score.
+void __cdecl Game_Reset();
+void __cdecl Game_Update();
+void __cdecl Shooter_Aim(int step);
+void __cdecl Shooter_Fire();
+void __cdecl Shooter_Update();
+// Writes a COLS*ROWS row-major mask to a separate caller-owned buffer.
+void __cdecl Shooter_Predict(int index, BYTE* guide);
+// Khizar Sheikh
+void __cdecl Grid_Init();
+int __cdecl Grid_Get(int col, int row);
+void __cdecl Grid_Set(int col, int row, int color);
+void __cdecl Grid_ShiftDown();
+void __cdecl Grid_AddTopRow();
+int __cdecl Grid_CheckDanger();
+int __cdecl Grid_IsEmpty();
+// Fill marks visited and increments popCount; mode 0=same color, 1=any nonempty.
+// Caller clears visited and popCount before a new search. Grid/score stay unchanged.
+void __cdecl Match_Fill(int col, int row, int color, int mode);
+// Match owns scoring: +POINTS_POP per match bubble, then +POINTS_DROP per floater.
+// Shooter must NOT award either kind of points again or call DropFloating twice.
+// Both functions return void, NOT counts or points. popCount is reused scratch.
+void __cdecl Match_Resolve(int col, int row);
+// Invoke only after a successful match; mode-1 search overwrites visited/popCount.
+void __cdecl Match_DropFloating();
+// Match_Resolve already awards match and floating points.
+void __cdecl Score_AddPop(int count);
+void __cdecl Score_AddDrop(int count);
+// Updates the miss counter and owns any ceiling shift and top-row refill.
+void __cdecl Score_UpdateDrop(int popped);
+// The caller supplies room for an int32 decimal string and its terminator.
+void __cdecl Num_ToString(int value, char* bufferAddress);
+
+#endif
+

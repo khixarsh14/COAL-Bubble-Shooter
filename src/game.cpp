@@ -3,6 +3,9 @@
 #include "console.h"
 
 static int previousKeys;
+static int heldAim;
+static DWORD lastAimTick;
+enum { AIM_REPEAT_MS = 120 };
 
 void __cdecl Game_Reset()
 {
@@ -10,6 +13,7 @@ void __cdecl Game_Reset()
     __asm {
         xor eax, eax
         mov score, eax
+        mov heldAim, eax
         mov shotActive, eax
         mov shotX, eax
         mov shotY, eax
@@ -37,6 +41,11 @@ void __cdecl Game_Reset()
 }
 
 void __cdecl Game_Update()
+{
+    Game_UpdateAt(GetTickCount());
+}
+
+void __cdecl Game_UpdateAt(DWORD now)
 {
     // ESI = action edges. EBX = held keys until the playing handler steps a shot.
     __asm {
@@ -97,9 +106,24 @@ void __cdecl Game_Update()
         mov eax, ebx
         and eax, KEY_LEFT | KEY_RIGHT
         cmp eax, KEY_LEFT
-        je update_aim_left
+        je update_aim_repeat
         cmp eax, KEY_RIGHT
-        jne update_fire
+        je update_aim_repeat
+        mov heldAim, 0                // No direction while both or neither are held.
+        jmp update_fire
+    update_aim_repeat:
+        mov ecx, now
+        cmp eax, heldAim
+        jne update_aim_step          // Start a new direction with one immediate step.
+        mov edx, ecx
+        sub edx, lastAimTick         // Unsigned elapsed time handles tick wraparound.
+        cmp edx, AIM_REPEAT_MS
+        jb update_fire
+    update_aim_step:
+        mov heldAim, eax
+        mov lastAimTick, ecx          // One repeat at most, even after a stalled frame.
+        cmp eax, KEY_LEFT
+        je update_aim_left
         push 1
         jmp update_aim
     update_aim_left:
@@ -141,6 +165,7 @@ void __cdecl Game_Update()
         jmp update_result
 
     update_open_pause:
+        mov heldAim, 0
         mov gameState, STATE_PAUSED
         jmp update_done
     update_lost:
