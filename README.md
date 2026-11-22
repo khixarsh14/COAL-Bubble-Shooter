@@ -30,8 +30,6 @@ tests\build_grid_tests.bat
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\ratio.ps1
 ```
 
-The grid test script runs the live console smoke test after GridTests. The ratio tool saves the production and test measurements in [docs/RATIO.md](docs/RATIO.md). The production minimum is 70% assembly.
-
 ## Source map
 
 - `src/shooter.cpp` handles aiming, fixed-point projectile motion, and placement.
