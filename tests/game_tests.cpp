@@ -169,6 +169,41 @@ static void TestPrediction()
     Check(unchanged, "Prediction preserves board, match scratch, live shot, game state and RNG");
 }
 
+static void TestAimRepeat()
+{
+    Game_Reset();
+    const int center = NUM_ANGLES / 2;
+    Game_UpdateAt(1000);
+    keyBits = KEY_LEFT;
+    Game_UpdateAt(1010);
+    Game_UpdateAt(1030);
+    keyBits = 0;
+    Game_UpdateAt(1050);
+    Check(aimIndex == center - 1, "A short arrow tap changes aim exactly once");
+    keyBits = KEY_RIGHT;
+    Game_UpdateAt(1100);
+    Game_UpdateAt(1219);
+    Check(aimIndex == center, "Held aim steps immediately and waits for the repeat interval");
+    Game_UpdateAt(1220);
+    Game_UpdateAt(1339);
+    Check(aimIndex == center + 1, "Aim repeats at 120 ms independently of frame count");
+    Game_UpdateAt(1800);
+    Check(aimIndex == center + 2, "A delayed frame produces only one repeat");
+    keyBits = KEY_LEFT;
+    Game_UpdateAt(1801);
+    Check(aimIndex == center + 1, "Changing direction steps immediately");
+    keyBits = KEY_LEFT | KEY_RIGHT;
+    Game_UpdateAt(1900);
+    Check(aimIndex == center + 1, "Opposite arrows cancel aim");
+    keyBits = KEY_LEFT;
+    Game_UpdateAt(0xFFFFFFF0u);
+    Game_UpdateAt(0x67u);
+    Check(aimIndex == center, "Tick rollover preserves the wait before the repeat");
+    Game_UpdateAt(0x68u);
+    Check(aimIndex == center - 1, "Aim repeats on time after tick rollover");
+    keyBits = 0;
+}
+
 static void TestStates()
 {
     gameState = STATE_MENU;
@@ -264,6 +299,7 @@ int main()
 {
     TestShooter();
     TestPrediction();
+    TestAimRepeat();
     TestStates();
     TestScore();
     printf("Game tests: %d checks, %d failures\n", checks, failures);

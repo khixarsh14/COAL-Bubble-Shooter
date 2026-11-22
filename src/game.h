@@ -36,6 +36,8 @@ extern char numBuf[12];
 // Game_Reset starts a new run and preserves the session high score.
 void __cdecl Game_Reset();
 void __cdecl Game_Update();
+// Frame update with an explicit tick for deterministic input tests.
+void __cdecl Game_UpdateAt(DWORD now);
 void __cdecl Shooter_Aim(int step);
 void __cdecl Shooter_Fire();
 void __cdecl Shooter_Update();
